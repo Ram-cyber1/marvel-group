@@ -1,40 +1,16 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv  # <-- ✅ load from .env
-import groq
-import os
-
-# Load the .env file
-load_dotenv()
-
-# Grab the key safely
-groq_api_key = os.getenv("GROQ_API_KEY")
-
-app = FastAPI()
-
-# Allow requests from Flutter
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-client = groq.Groq(api_key=groq_api_key)
-
-class Message(BaseModel):
-    message: str
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from dotenv import load_dotenv
 import groq
 import os
 
+# Load environment variables from .env
+load_dotenv()
+
 app = FastAPI()
 
-# Allow requests from Flutter
+# CORS middleware to allow frontend to access backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,18 +18,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Groq client with your API key
+# Initialize Groq client
 client = groq.Groq(api_key=os.getenv("GROQ_API_KEY"))
 
+# For incoming user messages
 class Message(BaseModel):
     message: str
 
-# Store session context (in-memory)
+# Store chat context in memory
 session = {
     "used_intro": False,
     "history": []
 }
 
+# POST route for chat
 @app.post("/chat")
 async def chat(msg: Message):
     user_message = msg.message
@@ -77,3 +55,4 @@ async def chat(msg: Message):
     reply = response.choices[0].message.content.strip()
     session["history"].append({"role": "assistant", "content": reply})
     return {"reply": reply}
+
