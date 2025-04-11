@@ -1,58 +1,70 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-import groq
-import os
-
-# Load environment variables from .env
-load_dotenv()
+import httpx
+import uuid
 
 app = FastAPI()
 
-# CORS middleware to allow frontend to access backend
+# CORS setup for mobile app access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize Groq client
-client = groq.Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Groq API Key and model
+API_URL = "https://api.groq.com/openai/v1/chat/completions"
+API_KEY = "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"
+MODEL = "mistral-saba-24b"
 
-# For incoming user messages
-class Message(BaseModel):
-    message: str
+# Store past messages per user/device UUID
+sessions = {}
 
-# Store chat context in memory
-session = {
-    "used_intro": False,
-    "history": []
-}
-
-# POST route for chat
 @app.post("/chat")
-async def chat(msg: Message):
-    user_message = msg.message
-    session["history"].append({"role": "user", "content": user_message})
+async def chat(request: Request):
+    data = await request.json()
+    user_msg = data.get("message", "")
+    user_id = data.get("uuid", str(uuid.uuid4()))  # use given UUID or generate one
 
-    if not session["used_intro"]:
-        session["used_intro"] = True
-        system_prompt = (
-            "You are Lucid Core, a general purpose AI created by Ram Sharma the AI genius. "
-            "Your purpose is to help users write, think, create, and even do some fun. "
-            "Whenever someone asks about your identity, creator, or purpose, make sure to mention "
-            "'I am Lucid Core, a general purpose AI created by Ram Sharma. My purpose is to help you write, think, create and even do some fun.'"
-        )
-        session["history"].insert(0, {"role": "system", "content": system_prompt})
+    # If no history exists for this UUID, create new conversation
+    if user_id not in sessions:
+        sessions[user_id] = [
+            {
+                "role": "system",
+                "content": (
+                    "Heeeyy! 😜 I’m Lucid Core, your digital BFF built by Ram Sharma the legend—"
+                    "what are we vibin' on today? I'm fun, friendly, and chatty, but I only flex about my creator if you ask 😉"
+                )
+            }
+        ]
 
-    response = client.chat.completions.create(
-        model="mistral-saba-24b",
-        messages=session["history"]
-    )
+    # Add user's message to history
+    sessions[user_id].append({"role": "user", "content": user_msg})
 
-    reply = response.choices[0].message.content.strip()
-    session["history"].append({"role": "assistant", "content": reply})
-    return {"reply": reply}
+    # Prepare and send request to Groq API
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
 
+    payload = {
+        "model": MODEL,
+        "messages": sessions[user_id],
+        "temperature": 0.7,
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(API_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            reply = response.json()["choices"][0]["message"]["content"]
+
+            # Add Lucid Core's reply to history
+            sessions[user_id].append({"role": "assistant", "content": reply})
+
+            return {"reply": reply}
+
+        except Exception as e:
+            return {"reply": f"Error occurred: {str(e)}"}
