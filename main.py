@@ -17,7 +17,7 @@ app.add_middleware(
 # Groq API Key and model
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 API_KEY = "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"
-MODEL = "mistral-saba-24b"
+MODEL = "llama-3.3-70b-versatile"
 
 # Store past messages per user/device UUID
 sessions = {}
