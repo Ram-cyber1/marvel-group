@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uuid
+import json
 
 app = FastAPI()
 
@@ -43,7 +44,7 @@ async def chat(request: Request):
     # Add user's message to history
     sessions[user_id].append({"role": "user", "content": user_msg})
 
-    # Prepare and send request to Groq API
+    # Prepare and send request to Groq API with conversation history
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -51,7 +52,7 @@ async def chat(request: Request):
 
     payload = {
         "model": MODEL,
-        "messages": sessions[user_id],
+        "messages": sessions[user_id],  # Include all past messages for context
         "temperature": 0.7,
     }
 
@@ -64,7 +65,13 @@ async def chat(request: Request):
             # Add Lucid Core's reply to history
             sessions[user_id].append({"role": "assistant", "content": reply})
 
+            # Limit the conversation history to the most recent 10 messages to avoid overflow
+            if len(sessions[user_id]) > 20:
+                sessions[user_id] = sessions[user_id][-20:]
+
             return {"reply": reply}
 
         except Exception as e:
             return {"reply": f"Error occurred: {str(e)}"}
+
+
