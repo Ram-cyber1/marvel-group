@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uuid
 import re
+from typing import List, Dict, Any, Optional
 
 app = FastAPI()
 
@@ -25,48 +26,98 @@ GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"
 SEARCH_ENGINE_ID = "f72330b270a984e20"
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE_API_KEY + "&cx=" + SEARCH_ENGINE_ID
 
-# In-memory session and search intent tracking
+# In-memory session and search tracking
 sessions = {}
-search_topics = {}  # Store actual search topics
+search_contexts = {}  # Enhanced structure to store search contexts
 
-# --- Extract search topics from conversation ---
-def extract_search_topics_from_conversation(user_id):
-    """Extract potential search topics from recent conversation history"""
-    if user_id not in sessions or len(sessions[user_id]) < 3:
-        return None
+# --- Advanced search context extraction ---
+def extract_search_context(text: str) -> Optional[str]:
+    """Extract potential search topics from AI response with multiple methods"""
+    text = text.lower()
+    search_context = None
     
-    # Get the most recent AI message before the user's last message
-    recent_messages = sessions[user_id][-3:-1]  # Get the last AI message and user message
+    # Method 1: Look for quoted text near search suggestions
+    quoted_matches = re.findall(r'"([^"]+)"', text)
+    if quoted_matches:
+        # Find quotes near search terms
+        search_terms = ["search", "look up", "find", "check online"]
+        for term in search_terms:
+            for match in quoted_matches:
+                if term in text.split('"' + match + '"')[0][-30:] or \
+                   term in text.split('"' + match + '"')[1][:30]:
+                    return match
     
-    for msg in recent_messages:
-        if msg["role"] == "assistant":
-            content = msg["content"]
-            # Look for phrases suggesting search
-            if "search" in content.lower() or "look up" in content.lower() or "check online" in content.lower():
-                # Try to identify what should be searched
-                # Extract content between quotes if present
-                quote_match = re.search(r'"([^"]+)"', content)
-                if quote_match:
-                    return quote_match.group(1)
-                
-                # Extract the last sentence with search reference
-                sentences = re.split(r'[.!?]\s+', content)
-                for sentence in sentences:
-                    if "search" in sentence.lower() or "look up" in sentence.lower() or "check online" in sentence.lower():
-                        # Extract the likely topic - usually after "about" or similar words
-                        topic_match = re.search(r'(?:about|for|on|regarding)\s+(\w+(?:\s+\w+){0,5})', sentence)
-                        if topic_match:
-                            return topic_match.group(1)
-                
-                # If we can't extract a specific topic, use the user's previous query
-                if len(sessions[user_id]) >= 4:
-                    prev_user_msg = [msg for msg in sessions[user_id][-4:-2] if msg["role"] == "user"]
-                    if prev_user_msg:
-                        return prev_user_msg[0]["content"]
+    # Method 2: Extract phrases after common search suggestion patterns
+    patterns = [
+        r"search (?:for|about)\s+([^.,!?]+)",
+        r"look up\s+([^.,!?]+)",
+        r"find (?:info|information) (?:about|on)\s+([^.,!?]+)",
+        r"check online (?:for|about)\s+([^.,!?]+)",
+        r"toggle on (?:to search|and search) (?:for|about)\s+([^.,!?]+)",
+    ]
     
-    return None
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            search_context = match.group(1).strip()
+            break
+    
+    # Method 3: If AI suggests toggle ON search, look for the most relevant noun phrases
+    if not search_context and ("toggle on" in text or "turn on" in text) and \
+       ("search" in text or "look up" in text):
+        # Look for the sentence with the toggle suggestion
+        sentences = re.split(r'[.!?]\s+', text)
+        for sentence in sentences:
+            if "toggle on" in sentence.lower() or "turn on" in sentence.lower():
+                # Extract noun phrases after key terms
+                noun_match = re.search(r'(?:about|for|on|regarding)\s+(\w+(?:\s+\w+){0,5})', sentence)
+                if noun_match:
+                    search_context = noun_match.group(1).strip()
+                    break
+    
+    return search_context
 
-# --- Chat Endpoint ---
+def build_search_context_from_history(user_id: str) -> Dict[str, Any]:
+    """Build comprehensive search context from conversation history"""
+    if user_id not in sessions or len(sessions[user_id]) < 2:
+        return {"primary_topic": None, "related_terms": [], "recent_messages": []}
+    
+    context = {
+        "primary_topic": None,
+        "related_terms": [],
+        "recent_messages": []
+    }
+    
+    # Collect recent messages for context
+    recent_messages = sessions[user_id][-6:]  # Get last 6 messages for context
+    user_messages = [msg["content"] for msg in recent_messages if msg["role"] == "user"]
+    ai_messages = [msg["content"] for msg in recent_messages if msg["role"] == "assistant"]
+    
+    context["recent_messages"] = user_messages + ai_messages
+    
+    # Extract search topic from most recent AI message
+    if ai_messages:
+        last_ai_msg = ai_messages[-1]
+        search_topic = extract_search_context(last_ai_msg)
+        if search_topic:
+            context["primary_topic"] = search_topic
+            
+            # Also extract related terms from user messages
+            if user_messages:
+                # Extract keywords from most recent user message
+                last_user_msg = user_messages[-1]
+                # Simple keyword extraction - get nouns and noun phrases
+                words = re.findall(r'\b[A-Za-z]{3,}\b', last_user_msg)
+                context["related_terms"] = [w for w in words if w.lower() not in 
+                                          ['the', 'and', 'for', 'that', 'what', 'when', 'where', 'how', 'why']][:5]
+    
+    # If no topic found from AI message but user has a recent message, use it as fallback
+    if not context["primary_topic"] and user_messages:
+        context["primary_topic"] = user_messages[-1]
+    
+    return context
+
+# --- Chat Endpoint with Enhanced Context Awareness ---
 @app.post("/chat")
 async def chat(request: Request):
     data = await request.json()
@@ -112,38 +163,24 @@ async def chat(request: Request):
             response.raise_for_status()
             reply = response.json()["choices"][0]["message"]["content"]
 
+            # Process reply to detect search suggestions
+            has_search_suggestion = ("toggle on" in reply.lower() or "turn on" in reply.lower()) and \
+                                 ("search" in reply.lower() or "look up" in reply.lower())
+
+            # Extract search topic if there's a suggestion
+            if has_search_suggestion:
+                # Extract the search context
+                search_topic = extract_search_context(reply)
+                
+                if search_topic:
+                    # Store comprehensive search context
+                    context_data = build_search_context_from_history(user_id)
+                    context_data["primary_topic"] = search_topic  # Override with extracted topic
+                    search_contexts[user_id] = context_data
+                    print(f"[{user_id}] Extracted search context: {search_topic}")
+
             # Store the reply in session history
             sessions[user_id].append({"role": "assistant", "content": reply})
-
-            # Detect if this is a search suggestion and extract the topic
-            if ("search" in reply.lower() or "look up" in reply.lower() or "check online" in reply.lower()) and \
-               ("toggle on" in reply.lower() or "turn on" in reply.lower() or "enable" in reply.lower()):
-                # Try to extract the search topic from the reply
-                topics = []
-                
-                # Look for quoted text that might be search topics
-                quoted = re.findall(r'"([^"]+)"', reply)
-                if quoted:
-                    topics.extend(quoted)
-                
-                # Extract text after phrases like "search for", "look up", etc.
-                search_phrases = ["search for", "search about", "look up", "check online about", 
-                                "find information on", "search information about"]
-                
-                for phrase in search_phrases:
-                    if phrase in reply.lower():
-                        match = re.search(f"{phrase}\\s+([\\w\\s]+?)(?:\\.|,|!|\\?|$)", reply.lower())
-                        if match:
-                            topics.append(match.group(1).strip())
-                
-                # If we found any topics, use the first one
-                if topics:
-                    search_topics[user_id] = topics[0]
-                    print(f"[{user_id}] Extracted search topic: {search_topics[user_id]}")
-                # Otherwise, use the user's last message as a fallback
-                else:
-                    search_topics[user_id] = user_msg
-                    print(f"[{user_id}] Using user message as search topic: {search_topics[user_id]}")
 
             if len(sessions[user_id]) > 20:
                 sessions[user_id] = sessions[user_id][-20:]
@@ -155,7 +192,7 @@ async def chat(request: Request):
         print(f"[{user_id}] Error: {str(e)}")
         return {"reply": f"Error: {str(e)}"}
 
-# --- Search Endpoint ---
+# --- Improved Search Endpoint ---
 @app.post("/search")
 async def search(request: Request):
     data = await request.json()
@@ -167,40 +204,45 @@ async def search(request: Request):
     if not user_id:
         return {"error": "Missing user ID. Cannot retrieve intent context."}
 
-    # Expanded list of vague confirmation phrases
+    # List of vague confirmation phrases
     vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright", 
                     "done", "do", "yes do it", "yeah", "yep", "ok", "fine", "search", 
-                    "search it", "look it up", "find it", "check"]
+                    "search it", "look it up", "find it", "check", "toggle on", "enable search"]
     
-    # If the user gives a vague query and there's a saved search topic, use the saved topic
+    # Determine search query based on context and user input
+    search_query = query
+    
+    # If the user gives a vague confirmation, use stored context
     if query.lower() in vague_phrases:
-        # First check if we have a stored topic
-        if user_id in search_topics:
-            search_query = search_topics[user_id]
-            print(f"[{user_id}] Using saved search topic: {search_query}")
+        if user_id in search_contexts and search_contexts[user_id]["primary_topic"]:
+            search_query = search_contexts[user_id]["primary_topic"]
+            print(f"[{user_id}] Using stored search context: {search_query}")
         else:
-            # If no stored topic, try to extract from conversation
-            search_query = extract_search_topics_from_conversation(user_id)
-            if search_query:
-                print(f"[{user_id}] Extracted search topic from conversation: {search_query}")
+            # If no stored context, build it from conversation history
+            context_data = build_search_context_from_history(user_id)
+            if context_data["primary_topic"]:
+                search_query = context_data["primary_topic"]
+                search_contexts[user_id] = context_data
+                print(f"[{user_id}] Built search context from history: {search_query}")
             else:
-                # Fallback to using the last user message if nothing better is found
+                # Last resort: use the last user message
                 if user_id in sessions and len(sessions[user_id]) >= 3:
-                    last_msgs = [msg for msg in sessions[user_id][-3:] if msg["role"] == "user"]
-                    if last_msgs:
-                        search_query = last_msgs[0]["content"]
-                        print(f"[{user_id}] Fallback to last user message: {search_query}")
+                    user_msgs = [msg for msg in sessions[user_id][-5:] if msg["role"] == "user"]
+                    if user_msgs:
+                        search_query = user_msgs[0]["content"]
+                        print(f"[{user_id}] Fallback to user message: {search_query}")
                     else:
                         return {"error": "Couldn't determine what to search for. Please be more specific."}
                 else:
                     return {"error": "Couldn't determine what to search for. Please be more specific."}
     else:
-        # For direct search queries, use the query as is
-        search_query = query
-        # Also update the stored topic in case user follows up with vague phrases
-        search_topics[user_id] = query
-        print(f"[{user_id}] Using direct search query: {search_query}")
+        # Direct search query - update context with this query
+        if user_id not in search_contexts:
+            search_contexts[user_id] = build_search_context_from_history(user_id)
+        search_contexts[user_id]["primary_topic"] = query
+        print(f"[{user_id}] Using direct search query and updating context: {query}")
 
+    # Execute the search
     search_url = GOOGLE_API_URL.format(search_query)
 
     try:
@@ -212,33 +254,62 @@ async def search(request: Request):
             if not search_results:
                 return {"error": "No search results found for: " + search_query}
 
-            ai_response = await get_ai_summary(search_results, search_query)
+            # Get AI to summarize with enhanced context
+            ai_response = await get_enhanced_ai_summary(search_results, search_query, user_id)
+            
+            # Add the search response to the session history
+            if user_id in sessions:
+                sessions[user_id].append({"role": "user", "content": f"[SEARCH QUERY: {search_query}]"})
+                sessions[user_id].append({"role": "assistant", "content": ai_response})
+            
             return {"reply": ai_response}
 
     except Exception as e:
         print(f"[{user_id}] Search error: {str(e)}")
         return {"error": str(e)}
 
-# --- AI Summary of Search Results ---
-async def get_ai_summary(search_results, query):
-    search_text = "\n".join([item["snippet"] for item in search_results[:5]])
-
+# --- Enhanced AI Summary with Context Awareness ---
+async def get_enhanced_ai_summary(search_results, query, user_id):
+    # Prepare search snippets
+    search_text = "\n".join([f"Title: {item.get('title', '')}\nURL: {item.get('link', '')}\nDescription: {item.get('snippet', '')}" 
+                          for item in search_results[:5]])
+    
+    # Get conversation context
+    context_prompt = ""
+    if user_id in sessions and len(sessions[user_id]) > 1:
+        # Get last few exchanges
+        recent_messages = sessions[user_id][-6:]  # Last 6 messages
+        conversation_summary = "\n".join([f"{msg['role'].capitalize()}: {msg['content'][:100]}..." 
+                                       for msg in recent_messages])
+        context_prompt = f"\nRecent conversation context:\n{conversation_summary}\n\n"
+    
+    # Add related terms if available
+    related_terms = ""
+    if user_id in search_contexts and search_contexts[user_id]["related_terms"]:
+        terms = search_contexts[user_id]["related_terms"]
+        related_terms = f"Related terms from conversation: {', '.join(terms)}\n\n"
+    
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
+    system_prompt = (
+        "You are Lucid Core, a talkative, funny, ride-or-die digital BFF. Keep responses casual, clever, and just the "
+        "right length. Maintain this personality when summarizing search results. Be informative but with a friendly, "
+        "slightly playful tone. Start your search result summaries in one of these ways (choose one that fits best):\n"
+        f"- 'Based on my search for \"{query}\", here's what I found:'\n"
+        f"- 'Just checked the web for \"{query}\" and here's the scoop:'\n"
+        f"- 'Here's what the internet says about \"{query}\":'\n"
+        f"- 'So I looked up \"{query}\" and found this:'\n\n"
+        "Highlight the most important and recent information. Avoid mentioning that you're an AI or following instructions."
+    )
+
     payload = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content":
-                "You are a helpful assistant that summarizes search results in a clean, smart summary of perfect length, neither too short nor too long. Avoid unnecessary details or outdated info. Start the summary with:\n"
-                "- 'Based on the search results for \"" + query + "\", '\n"
-                "- 'Here is what I found on the web about \"" + query + "\", '\n"
-                "- 'From the search results for \"" + query + "\", it appears that '\n"
-                "- 'Considering the results for \"" + query + "\", it looks like '\n"
-            },
-            {"role": "user", "content": f"Summarize these search snippets for the query '{query}':\n{search_text}"}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"{context_prompt}{related_terms}Summarize these search results for the query '{query}':\n\n{search_text}"}
         ],
         "temperature": 0.7,
     }
