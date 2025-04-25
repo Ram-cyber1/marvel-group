@@ -24,9 +24,9 @@ GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"
 SEARCH_ENGINE_ID = "f72330b270a984e20"
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE_API_KEY + "&cx=" + SEARCH_ENGINE_ID
 
-# In-memory session storage (per UUID)
+# In-memory session and search intent tracking
 sessions = {}
-last_search_intent = {}  # NEW: stores previous search suggestion per user
+last_search_intent = {}
 
 # --- Chat Endpoint ---
 @app.post("/chat")
@@ -46,7 +46,7 @@ async def chat(request: Request):
         ]
 
     if context and len(context) > 0:
-        sessions[user_id] = sessions[user_id][:1]  # keep system prompt
+        sessions[user_id] = sessions[user_id][:1]
         for msg in context:
             if msg.startswith("User: "):
                 sessions[user_id].append({"role": "user", "content": msg[6:]})
@@ -74,14 +74,12 @@ async def chat(request: Request):
             response.raise_for_status()
             reply = response.json()["choices"][0]["message"]["content"]
 
-            # Save reply
             sessions[user_id].append({"role": "assistant", "content": reply})
 
-            # Detect and store search intent
+            # Detect and store search intent if AI suggests it
             if "I can search the web" in reply or "want me to check online" in reply.lower():
-                # Use the latest user message as search topic
                 last_search_intent[user_id] = user_msg.strip()
-                print(f"[{user_id}] Saved search intent: {last_search_intent[user_id]}")
+                print(f"[{user_id}] Saved search intent from AI context: {last_search_intent[user_id]}")
 
             if len(sessions[user_id]) > 20:
                 sessions[user_id] = sessions[user_id][-20:]
@@ -97,17 +95,26 @@ async def chat(request: Request):
 @app.post("/search")
 async def search(request: Request):
     data = await request.json()
-    query = data.get("query", "")
+    query = data.get("query", "").strip()
     user_id = data.get("user_id", None)
+
+    print(f"[{user_id}] Incoming search query: '{query}'")
+
+    if not user_id:
+        return {"error": "Missing user ID. Cannot retrieve intent context."}
 
     vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright"]
 
-    if query.strip().lower() in vague_phrases and user_id in last_search_intent:
-        query = last_search_intent[user_id]
-        print(f"[{user_id}] Using previous intent for vague query: {query}")
+    if query.lower() in vague_phrases:
+        if user_id in last_search_intent:
+            query = last_search_intent[user_id]
+            print(f"[{user_id}] Replaced vague query with last intent: {query}")
+        else:
+            return {"error": "Your query was unclear and I don’t know what to search for."}
 
-    if not query:
-        return {"error": "No search query provided and no prior context to use."}
+    # Save current specific search query as new intent
+    last_search_intent[user_id] = query
+    print(f"[{user_id}] Stored new search intent: {query}")
 
     search_url = GOOGLE_API_URL.format(query)
 
@@ -160,3 +167,4 @@ async def get_ai_summary(search_results):
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
+
