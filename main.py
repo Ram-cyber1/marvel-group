@@ -23,7 +23,8 @@ MODEL = "llama-3.3-70b-versatile"  # Your Groq model
 # Google Custom Search API configuration
 GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"  # Replace with your Google API key
 SEARCH_ENGINE_ID = "f72330b270a984e20"  # Replace with your Google Custom Search Engine ID
-GOOGLE_API_URL = f"https://www.googleapis.com/customsearch/v1?q={{}}&key={AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY}&cx={f72330b270a984e20}"
+GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY&cx=f72330b270a984e20"
+
 
 # In-memory session storage (per UUID)
 sessions = {}
