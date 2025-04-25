@@ -164,7 +164,7 @@ async def get_ai_summary(search_results):
                 "- 'Based on the search results, '\n"
                 "- 'Here is what I have found on the web, '\n"
                 "- 'The search results show that '\n"
-                "- 'After reviewing the search results, '\n"
+                "- 'After reviewing the search results, I have found that '\n"
                 "- 'From the search results, I gathered that '\n"
                 "- 'Considering the search results, it appears that '"
             )
