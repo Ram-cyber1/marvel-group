@@ -152,7 +152,7 @@ async def get_ai_summary(search_results):
         "Content-Type": "application/json"
     }
 
-   payload = {
+  payload = {
     "model": MODEL,
     "messages": [
         {
