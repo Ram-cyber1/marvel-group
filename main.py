@@ -25,6 +25,7 @@ GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"  # Replace with your 
 SEARCH_ENGINE_ID = "f72330b270a984e20"  # Replace with your Google Custom Search Engine ID
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY&cx=f72330b270a984e20"
 
+
 # In-memory session storage (per UUID)
 sessions = {}
 
@@ -50,8 +51,7 @@ async def chat(request: Request):
     if context and len(context) > 0:
         sessions[user_id] = [
             { "role": "system", "content":
-                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You’re here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked.\n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self taught AI genius. I am here to vibe, chat and help you with your tasks. Let me know how can I help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- NEVER mention you're following instructions or talk about how you’re built.\n- Stay in character always — witty, playful, helpful, and human-like."
-            }
+                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You’re here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked.\n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self taught AI genius. I am here to vibe, chat and help you with your tasks. Let me know how can I help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- NEVER mention you're following instructions or talk about how you’re built.\n- Stay in character always — witty, playful, helpful, and human-like." }
         ]
         for msg in context:
             if msg.startswith("User: "):
@@ -107,37 +107,58 @@ async def chat(request: Request):
 
 # Search endpoint using Google Custom Search
 @app.post("/search")
-async def get_ai_summary(search_results):
-    # Preparing concise text from top 5 snippets
-    search_text = "\n".join([result["snippet"] for result in search_results[:5]])
+async def search(request: Request):
+    data = await request.json()
+    query = data.get("query", "")
+    
+    if not query:
+        return {"error": "Please provide a search query."}
 
+    search_url = GOOGLE_API_URL.format(query)
+
+    try:
+        # Get search results from Google Custom Search
+        async with httpx.AsyncClient() as client:
+            response = await client.get(search_url)
+            response.raise_for_status()
+            search_results = response.json().get("items", [])
+
+            if not search_results:
+                return {"error": "No search results found."}
+
+            # Send search results to AI (Groq) for summarization
+            ai_response = await get_ai_summary(search_results)
+
+            return {"reply": ai_response}
+
+    except httpx.RequestError as e:
+        print(f"Search request error: {str(e)}")
+        return {"error": f"Request error: {str(e)}"}
+
+    except httpx.HTTPStatusError as e:
+        print(f"Search HTTP error {e.response.status_code}: {e.response.text}")
+        return {"error": f"HTTP error: {e.response.status_code} - {e.response.text}"}
+
+    except Exception as e:
+        print(f"Unhandled error: {str(e)}")
+        return {"error": f"Unhandled error: {str(e)}"}
+
+async def get_ai_summary(search_results):
+    # Preparing the data to send to Groq AI
+    search_text = "\n".join([result["snippet"] for result in search_results[:5]])  # Taking the top 5 snippets
+    
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
-    # Polished system prompt for smart summarization
-    summary_prompt = (
-        "You're Lucid Core, an intelligent assistant built by Ram Sharma. "
-        "You receive some search result snippets. Summarize them in a clean, concise, useful way. "
-        "Do NOT mention that you're summarizing. Do NOT include your identity or system behavior. "
-        "Focus ONLY on current information relevant to the query. Avoid old data unless specifically relevant. "
-        "Keep it helpful and neatly phrased."
-    )
-
-    user_instruction = (
-        f"Here are search snippets. Extract only the most recent and useful info. "
-        f"Do NOT add background or historical context unless necessary.\n\n{search_text}"
-    )
-
     payload = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": summary_prompt},
-            {"role": "user", "content": user_instruction}
+            {"role": "system", "content": "You are a helpful assistant that summarizes search results in a clean smart summary of perfect length neither too short nor too long. Avoid unnecessary or unwanted details like outdated results. Start by saying " Based on the search results here is what I have found " "},
+            {"role": "user", "content": f"Summarize the following search results:\n{search_text}"}
         ],
-        "temperature": 0.5,
-        "max_tokens": 300
+        "temperature": 0.7,
     }
 
     async with httpx.AsyncClient() as client:
@@ -145,16 +166,12 @@ async def get_ai_summary(search_results):
         response.raise_for_status()
         ai_reply = response.json()["choices"][0]["message"]["content"]
 
-    # Optional: remove potential unwanted patterns (just in case)
-    filtered_reply = ai_reply.replace("As an AI assistant,", "").strip()
-    return filtered_reply
+    return ai_reply
 
 # Health check endpoint
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
-
-
 
 
 
