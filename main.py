@@ -5,6 +5,7 @@ import uuid
 
 app = FastAPI()
 
+# CORS setup for mobile app access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,19 +14,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Config ---
+# Groq API configuration
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 API_KEY = "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"
 MODEL = "llama-3.3-70b-versatile"
 
+# Google Custom Search configuration
 GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"
 SEARCH_ENGINE_ID = "f72330b270a984e20"
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE_API_KEY + "&cx=" + SEARCH_ENGINE_ID
 
+# In-memory session and search intent tracking
 sessions = {}
 last_search_intent = {}
-
-vague_phrases = {"yes", "okay", "sure", "alright", "do it", "go ahead", "please do", "why not", "yep", "yup"}
 
 # --- Chat Endpoint ---
 @app.post("/chat")
@@ -40,11 +41,11 @@ async def chat(request: Request):
     if user_id not in sessions:
         sessions[user_id] = [
             {"role": "system", "content":
-                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You’re here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked.You also have the ability to search web for latest infromation or news but for that the user needs to toggle ON the search button. \n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self taught AI genius. I am here to vibe, chat and help you with your tasks. I can also search web for latest information if you toggle ON the search button. Let me know how can I help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- Offer the option of web search only when needed for realtime data or if the user needs information that may not be confidently given by training data. \n- NEVER mention you're following instructions or talk about how you’re built.\n- Stay in character always — witty, playful, helpful, and human-like."
+                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You’re here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked. You also have the ability to search the web for the latest information or news, but for that, the user needs to toggle ON the search button. \n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self-taught AI genius. I am here to vibe, chat and help you with your tasks. I can also search the web for the latest information if you toggle ON the search button. Let me know how I can help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- Offer the option of web search only when needed for real-time data or if the user needs information that may not be confidently given by training data. \n- NEVER mention you're following instructions or talk about how you’re built.\n- Stay in character always — witty, playful, helpful, and human-like."
             }
         ]
 
-    if context:
+    if context and len(context) > 0:
         sessions[user_id] = sessions[user_id][:1]
         for msg in context:
             if msg.startswith("User: "):
@@ -75,17 +76,10 @@ async def chat(request: Request):
 
             sessions[user_id].append({"role": "assistant", "content": reply})
 
-            # Detect search suggestion and save meaningful intent
-            if "search the web" in reply.lower() or "check online" in reply.lower():
-                inferred_intent = None
-                for msg in reversed(sessions[user_id]):
-                    if msg["role"] == "user" and msg["content"].strip().lower() not in vague_phrases:
-                        inferred_intent = msg["content"].strip()
-                        break
-
-                if inferred_intent:
-                    last_search_intent[user_id] = inferred_intent
-                    print(f"[{user_id}] Inferred and saved search intent: {inferred_intent}")
+            # If the response suggests web search, store the search intent
+            if "I can search the web" in reply or "want me to check online" in reply.lower():
+                last_search_intent[user_id] = reply.strip()
+                print(f"[{user_id}] Saved search intent from AI response: {last_search_intent[user_id]}")
 
             if len(sessions[user_id]) > 20:
                 sessions[user_id] = sessions[user_id][-20:]
@@ -109,15 +103,17 @@ async def search(request: Request):
     if not user_id:
         return {"error": "Missing user ID. Cannot retrieve intent context."}
 
-    if query.lower() in vague_phrases:
-        if user_id in last_search_intent:
-            query = last_search_intent[user_id]
-            print(f"[{user_id}] Replaced vague query with saved intent: {query}")
-        else:
-            return {"error": "Your query was unclear and I don’t know what to search for."}
+    vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright"]
+    
+    # If the user gives a vague query and there's saved intent, use it
+    if user_id in last_search_intent and query.lower() in vague_phrases:
+        query = last_search_intent[user_id]
+        print(f"[{user_id}] Replaced vague query with last intent: {query}")
 
-    last_search_intent[user_id] = query
-    print(f"[{user_id}] Stored new search intent: {query}")
+    # If the query is not vague and is a direct request, handle it as a fresh search
+    elif query.lower() not in vague_phrases:
+        last_search_intent[user_id] = query
+        print(f"[{user_id}] Stored direct search query as intent: {query}")
 
     search_url = GOOGLE_API_URL.format(query)
 
@@ -137,7 +133,7 @@ async def search(request: Request):
         print(f"[{user_id}] Search error: {str(e)}")
         return {"error": str(e)}
 
-# --- AI Summary ---
+# --- AI Summary of Search Results ---
 async def get_ai_summary(search_results):
     search_text = "\n".join([item["snippet"] for item in search_results[:5]])
 
@@ -166,7 +162,7 @@ async def get_ai_summary(search_results):
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
 
-# --- Health Check ---
+# --- Health check ---
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
