@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uuid
+import re
 
 app = FastAPI()
 
@@ -26,7 +27,7 @@ GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE
 
 # In-memory session and search intent tracking
 sessions = {}
-last_search_intent = {}
+search_topics = {}  # Store actual search topics instead of full responses
 
 # --- Chat Endpoint ---
 @app.post("/chat")
@@ -41,7 +42,7 @@ async def chat(request: Request):
     if user_id not in sessions:
         sessions[user_id] = [
             {"role": "system", "content":
-                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You’re here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked. You also have the ability to search the web for the latest information or news, but for that, the user needs to toggle ON the search button. \n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self-taught AI genius. I am here to vibe, chat and help you with your tasks. I can also search the web for the latest information if you toggle ON the search button. Let me know how I can help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- Offer the option of web search only when needed for real-time data or if the user needs information that may not be confidently given by training data. \n- NEVER mention you're following instructions or talk about how you’re built.\n- Stay in character always — witty, playful, helpful, and human-like."
+                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You're here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked. You also have the ability to search the web for the latest information or news, but for that, the user needs to toggle ON the search button. \n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self-taught AI genius. I am here to vibe, chat and help you with your tasks. I can also search the web for the latest information if you toggle ON the search button. Let me know how I can help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- Offer the option of web search only when needed for real-time data or if the user needs information that may not be confidently given by training data. \n- NEVER mention you're following instructions or talk about how you're built.\n- Stay in character always — witty, playful, helpful, and human-like.\n- When suggesting a web search, ALWAYS clearly indicate the search topic in this format: 'SEARCH_TOPIC: [topic]' at the end of your response, which will be removed before showing to the user."
             }
         ]
 
@@ -74,12 +75,21 @@ async def chat(request: Request):
             response.raise_for_status()
             reply = response.json()["choices"][0]["message"]["content"]
 
-            sessions[user_id].append({"role": "assistant", "content": reply})
+            # Extract search topic if present
+            search_match = re.search(r'SEARCH_TOPIC: \[(.*?)\]', reply)
+            if search_match:
+                search_topic = search_match.group(1).strip()
+                # Remove the search topic marker from the response
+                clean_reply = re.sub(r'SEARCH_TOPIC: \[.*?\]', '', reply).strip()
+                
+                # Store the search topic for this user
+                search_topics[user_id] = search_topic
+                print(f"[{user_id}] Saved search topic: {search_topic}")
+                
+                # Update reply to not show the search topic marker
+                reply = clean_reply
 
-            # If the response suggests web search, store the search intent
-            if "I can search the web" in reply or "want me to check online" in reply.lower():
-                last_search_intent[user_id] = reply.strip()
-                print(f"[{user_id}] Saved search intent from AI response: {last_search_intent[user_id]}")
+            sessions[user_id].append({"role": "assistant", "content": reply})
 
             if len(sessions[user_id]) > 20:
                 sessions[user_id] = sessions[user_id][-20:]
@@ -103,19 +113,20 @@ async def search(request: Request):
     if not user_id:
         return {"error": "Missing user ID. Cannot retrieve intent context."}
 
-    vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright"]
+    vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright", "done", "do", "yes do it"]
     
-    # If the user gives a vague query and there's saved intent, use it
-    if user_id in last_search_intent and query.lower() in vague_phrases:
-        query = last_search_intent[user_id]
-        print(f"[{user_id}] Replaced vague query with last intent: {query}")
+    # If the user gives a vague query and there's a saved search topic, use the saved topic
+    if user_id in search_topics and query.lower() in vague_phrases:
+        search_query = search_topics[user_id]
+        print(f"[{user_id}] Using saved search topic: {search_query}")
+    else:
+        # For direct search queries, use the query as is
+        search_query = query
+        # Also update the stored topic in case user follows up with vague phrases
+        search_topics[user_id] = query
+        print(f"[{user_id}] Using direct search query: {search_query}")
 
-    # If the query is not vague and is a direct request, handle it as a fresh search
-    elif query.lower() not in vague_phrases:
-        last_search_intent[user_id] = query
-        print(f"[{user_id}] Stored direct search query as intent: {query}")
-
-    search_url = GOOGLE_API_URL.format(query)
+    search_url = GOOGLE_API_URL.format(search_query)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -124,9 +135,9 @@ async def search(request: Request):
             search_results = response.json().get("items", [])
 
             if not search_results:
-                return {"error": "No search results found."}
+                return {"error": "No search results found for: " + search_query}
 
-            ai_response = await get_ai_summary(search_results)
+            ai_response = await get_ai_summary(search_results, search_query)
             return {"reply": ai_response}
 
     except Exception as e:
@@ -134,7 +145,7 @@ async def search(request: Request):
         return {"error": str(e)}
 
 # --- AI Summary of Search Results ---
-async def get_ai_summary(search_results):
+async def get_ai_summary(search_results, query):
     search_text = "\n".join([item["snippet"] for item in search_results[:5]])
 
     headers = {
@@ -147,12 +158,12 @@ async def get_ai_summary(search_results):
         "messages": [
             {"role": "system", "content":
                 "You are a helpful assistant that summarizes search results in a clean, smart summary of perfect length, neither too short nor too long. Avoid unnecessary details or outdated info. Start the summary with:\n"
-                "- 'Based on the search results, '\n"
-                "- 'Here is what I found on the web, '\n"
-                "- 'From the search results, it appears that '\n"
-                "- 'Considering the results, it looks like '\n"
+                "- 'Based on the search results for \"" + query + "\", '\n"
+                "- 'Here is what I found on the web about \"" + query + "\", '\n"
+                "- 'From the search results for \"" + query + "\", it appears that '\n"
+                "- 'Considering the results for \"" + query + "\", it looks like '\n"
             },
-            {"role": "user", "content": f"Summarize these search snippets:\n{search_text}"}
+            {"role": "user", "content": f"Summarize these search snippets for the query '{query}':\n{search_text}"}
         ],
         "temperature": 0.7,
     }
@@ -166,5 +177,4 @@ async def get_ai_summary(search_results):
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
-
 
