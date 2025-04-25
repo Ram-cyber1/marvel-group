@@ -5,7 +5,6 @@ import uuid
 
 app = FastAPI()
 
-# CORS setup for mobile app access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,19 +13,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Groq API configuration
+# --- Config ---
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 API_KEY = "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"
 MODEL = "llama-3.3-70b-versatile"
 
-# Google Custom Search configuration
 GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"
 SEARCH_ENGINE_ID = "f72330b270a984e20"
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE_API_KEY + "&cx=" + SEARCH_ENGINE_ID
 
-# In-memory session and search intent tracking
 sessions = {}
 last_search_intent = {}
+
+vague_phrases = {"yes", "okay", "sure", "alright", "do it", "go ahead", "please do", "why not", "yep", "yup"}
 
 # --- Chat Endpoint ---
 @app.post("/chat")
@@ -45,7 +44,7 @@ async def chat(request: Request):
             }
         ]
 
-    if context and len(context) > 0:
+    if context:
         sessions[user_id] = sessions[user_id][:1]
         for msg in context:
             if msg.startswith("User: "):
@@ -76,10 +75,17 @@ async def chat(request: Request):
 
             sessions[user_id].append({"role": "assistant", "content": reply})
 
-            # Detect and store search intent if AI suggests it
-            if "I can search the web" in reply or "want me to check online" in reply.lower():
-                last_search_intent[user_id] = user_msg.strip()
-                print(f"[{user_id}] Saved search intent from AI context: {last_search_intent[user_id]}")
+            # Detect search suggestion and save meaningful intent
+            if "search the web" in reply.lower() or "check online" in reply.lower():
+                inferred_intent = None
+                for msg in reversed(sessions[user_id]):
+                    if msg["role"] == "user" and msg["content"].strip().lower() not in vague_phrases:
+                        inferred_intent = msg["content"].strip()
+                        break
+
+                if inferred_intent:
+                    last_search_intent[user_id] = inferred_intent
+                    print(f"[{user_id}] Inferred and saved search intent: {inferred_intent}")
 
             if len(sessions[user_id]) > 20:
                 sessions[user_id] = sessions[user_id][-20:]
@@ -103,16 +109,13 @@ async def search(request: Request):
     if not user_id:
         return {"error": "Missing user ID. Cannot retrieve intent context."}
 
-    vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright"]
-
     if query.lower() in vague_phrases:
         if user_id in last_search_intent:
             query = last_search_intent[user_id]
-            print(f"[{user_id}] Replaced vague query with last intent: {query}")
+            print(f"[{user_id}] Replaced vague query with saved intent: {query}")
         else:
             return {"error": "Your query was unclear and I don’t know what to search for."}
 
-    # Save current specific search query as new intent
     last_search_intent[user_id] = query
     print(f"[{user_id}] Stored new search intent: {query}")
 
@@ -134,7 +137,7 @@ async def search(request: Request):
         print(f"[{user_id}] Search error: {str(e)}")
         return {"error": str(e)}
 
-# --- AI Summary of Search Results ---
+# --- AI Summary ---
 async def get_ai_summary(search_results):
     search_text = "\n".join([item["snippet"] for item in search_results[:5]])
 
@@ -163,8 +166,9 @@ async def get_ai_summary(search_results):
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
 
-# --- Health check ---
+# --- Health Check ---
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
+
 
