@@ -155,7 +155,7 @@ async def get_ai_summary(search_results):
     payload = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant that summarizes search results in a clean smart summary of perfect length neither too short nor too long. Avoid unnecessary or unwanted details like outdated results. Start by saying ' Based on the search results here is what I have found ' "},
+           {"role": "system", "content": "You are a helpful assistant that summarizes search results in a clean smart summary of perfect length, neither too short nor too long. Avoid unnecessary or unwanted details like outdated results. Start the summary with one of the following lines randomly:\n- 'Based on the search results, '\n- 'Here is what I have found on the web, '\n- 'The search results show that '\n- 'After reviewing the search results, '\n- 'From the search results, I gathered that '\n- 'Considering the search results, it appears that '"}
             {"role": "user", "content": f"Summarize the following search results:\n{search_text}"}
         ],
         "temperature": 0.7,
