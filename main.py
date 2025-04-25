@@ -117,6 +117,7 @@ async def search(request: Request):
     search_url = GOOGLE_API_URL.format(query)
 
     try:
+        # Get search results from Google Custom Search
         async with httpx.AsyncClient() as client:
             response = await client.get(search_url)
             response.raise_for_status()
@@ -125,24 +126,10 @@ async def search(request: Request):
             if not search_results:
                 return {"error": "No search results found."}
 
-            results = []
-            for result in search_results[:5]:  # Limit to top 5 results
-                results.append({
-                    "title": result["title"],
-                    "link": result["link"],
-                    "snippet": result["snippet"]
-                })
+            # Send search results to AI (Groq) for summarization
+            ai_response = await get_ai_summary(search_results)
 
-            # Summarize the results and append links at the end
-            summary = "Here’s what I found based on your query:\n\n"
-            for result in results:
-                summary += f"{result['title']}: {result['snippet']}\n\n"
-            
-            summary += "\nFor more details, check out the following links:\n"
-            for result in results:
-                summary += f"- {result['link']}\n"
-
-            return {"search_results": summary}
+            return {"reply": ai_response}
 
     except httpx.RequestError as e:
         print(f"Search request error: {str(e)}")
@@ -156,10 +143,36 @@ async def search(request: Request):
         print(f"Unhandled error: {str(e)}")
         return {"error": f"Unhandled error: {str(e)}"}
 
+async def get_ai_summary(search_results):
+    # Preparing the data to send to Groq AI
+    search_text = "\n".join([result["snippet"] for result in search_results[:5]])  # Taking the top 5 snippets
+    
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant that summarizes search results."},
+            {"role": "user", "content": f"Summarize the following search results:\n{search_text}"}
+        ],
+        "temperature": 0.7,
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(API_URL, headers=headers, json=payload, timeout=15)
+        response.raise_for_status()
+        ai_reply = response.json()["choices"][0]["message"]["content"]
+
+    return ai_reply
+
 # Health check endpoint
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
+
 
 
 
