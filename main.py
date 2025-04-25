@@ -152,11 +152,10 @@ async def get_ai_summary(search_results):
         "Content-Type": "application/json"
     }
 
-  payload = {
-    "model": MODEL,
-    "messages": [
-        {
-            "role": "system", 
+    payload = {
+        "model": MODEL,
+        "messages": [
+            { "role": "system", 
             "content": (
                 "You are a helpful assistant that summarizes search results in a clean, "
                 "smart summary of perfect length, neither too short nor too long. Avoid "
@@ -169,14 +168,12 @@ async def get_ai_summary(search_results):
                 "- 'From the search results, I gathered that '\n"
                 "- 'Considering the search results, it appears that '"
             )
-        },
-        {
-            "role": "user", 
-            "content": f"Summarize the following search results:\n{search_text}"
-        }
-    ],
-    "temperature": 0.7,
-}
+},
+            {"role": "user", "content": f"Summarize the following search results:\n{search_text}"}
+        ],
+        "temperature": 0.7,
+    }
+
     async with httpx.AsyncClient() as client:
         response = await client.post(API_URL, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
@@ -188,6 +185,3 @@ async def get_ai_summary(search_results):
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
-
-
-
