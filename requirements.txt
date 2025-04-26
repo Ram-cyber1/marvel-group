@@ -4,3 +4,4 @@ groq
 python-dotenv
 httpx
 google-api-python-client
+Pillow
