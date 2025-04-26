@@ -1,8 +1,11 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uuid
 import re
+import base64
+import io
+from PIL import Image
 from typing import List, Dict, Any, Optional
 
 app = FastAPI()
@@ -25,6 +28,18 @@ MODEL = "llama-3.3-70b-versatile"
 GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"
 SEARCH_ENGINE_ID = "f72330b270a984e20"
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE_API_KEY + "&cx=" + SEARCH_ENGINE_ID
+
+# Hugging Face API configuration
+HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/"
+import os
+
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+
+
+# Hugging Face model endpoints
+IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-base"
+IMAGE_GENERATION_MODEL = "stabilityai/stable-diffusion-2"
+OCR_MODEL = "microsoft/trocr-base-printed"
 
 # In-memory session and search tracking
 sessions = {}
@@ -318,6 +333,123 @@ async def get_enhanced_ai_summary(search_results, query, user_id):
         response = await client.post(API_URL, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
+
+# --- Image Analysis Endpoint (BLIP Image Captioning) ---
+@app.post("/image-analysis")
+async def analyze_image(file: UploadFile = File(...)):
+    """
+    Analyze an image using Salesforce/blip-image-captioning-base model
+    """
+    try:
+        # Read image file
+        image_content = await file.read()
+        
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Encode image as base64
+        encoded_image = base64.b64encode(image_content).decode("utf-8")
+        
+        # Send request to Hugging Face API
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{HUGGINGFACE_API_URL}{IMAGE_CAPTIONING_MODEL}",
+                headers=headers,
+                json={"inputs": {"image": encoded_image}},
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            print(f"Image analysis result: {result}")
+            return {"caption": result[0]["generated_text"] if isinstance(result, list) else result["generated_text"]}
+    
+    except Exception as e:
+        print(f"Image analysis error: {str(e)}")
+        return {"error": f"Failed to analyze image: {str(e)}"}
+
+# --- Image Generation Endpoint (Stable Diffusion) ---
+@app.post("/image-generation")
+async def generate_image(request: Request):
+    """
+    Generate an image using stabilityai/stable-diffusion-2 model
+    """
+    try:
+        data = await request.json()
+        prompt = data.get("prompt", "")
+        
+        if not prompt:
+            return {"error": "Prompt is required for image generation"}
+        
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Send request to Hugging Face API
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
+                headers=headers,
+                json={"inputs": prompt},
+                timeout=90  # Longer timeout for image generation
+            )
+            response.raise_for_status()
+            
+            # The response is binary image data
+            image_bytes = response.content
+            
+            # Convert to base64 for response
+            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+            
+            print(f"Generated image for prompt: {prompt[:30]}...")
+            return {"image": encoded_image}
+    
+    except Exception as e:
+        print(f"Image generation error: {str(e)}")
+        return {"error": f"Failed to generate image: {str(e)}"}
+
+# --- OCR Endpoint (TrOCR) ---
+@app.post("/image-ocr")
+async def process_ocr(file: UploadFile = File(...)):
+    """
+    Extract text from images using microsoft/trocr-base-printed model
+    """
+    try:
+        # Read image file
+        image_content = await file.read()
+        
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Encode image as base64
+        encoded_image = base64.b64encode(image_content).decode("utf-8")
+        
+        # Send request to Hugging Face API
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{HUGGINGFACE_API_URL}{OCR_MODEL}",
+                headers=headers,
+                json={"inputs": {"image": encoded_image}},
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            extracted_text = result[0]["generated_text"] if isinstance(result, list) else result["generated_text"]
+            print(f"OCR result: {extracted_text[:50]}...")
+            return {"text": extracted_text}
+    
+    except Exception as e:
+        print(f"OCR error: {str(e)}")
+        return {"error": f"Failed to extract text from image: {str(e)}"}
 
 # --- Health check ---
 @app.get("/ping")
