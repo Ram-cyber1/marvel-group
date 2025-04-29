@@ -396,7 +396,7 @@ async def generate_image(request: Request):
                 f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
                 headers=headers,
                 json={"inputs": prompt},
-                timeout=90  # Longer timeout for image generation
+                timeout=180  # Longer timeout for image generation
             )
             response.raise_for_status()
             
@@ -438,7 +438,7 @@ async def process_ocr(file: UploadFile = File(...)):
                 f"{HUGGINGFACE_API_URL}{OCR_MODEL}",
                 headers=headers,
                 json={"inputs": {"image": encoded_image}},
-                timeout=30
+                timeout=90
             )
             response.raise_for_status()
             result = response.json()
