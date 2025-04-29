@@ -48,7 +48,7 @@ HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 # Hugging Face model endpoints
 IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
 IMAGE_GENERATION_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
-OCR_MODEL = "Qwen/Qwen2-VL-2B-Instruct"
+OCR_MODEL = "naver-clova-ix/donut-base"
 
 # In-memory storage with size limits
 MAX_SESSIONS = 1000
