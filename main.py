@@ -1,14 +1,26 @@
-from fastapi import FastAPI, Request, File, UploadFile, Form
+from fastapi import FastAPI, Request, File, UploadFile, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uuid
 import re
 import base64
 import io
+import os
 from PIL import Image
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+from pydantic import BaseModel, Field
+import asyncio
+from starlette.responses import JSONResponse
+import logging
 
-app = FastAPI()
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Lucid Core API", version="1.0.0")
 
 # CORS setup for mobile app access
 app.add_middleware(
@@ -19,35 +31,109 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Groq API configuration
+# API configuration
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
-API_KEY = "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"
-MODEL = "llama-3.3-70b-versatile"
+API_KEY = os.getenv("GROQ_API_KEY", "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")
+MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Google Custom Search configuration
-GOOGLE_API_KEY = "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY"
-SEARCH_ENGINE_ID = "f72330b270a984e20"
-GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?q={}&key=" + GOOGLE_API_KEY + "&cx=" + SEARCH_ENGINE_ID
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJi4fgY")
+SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "f72330b270a984e20")
+GOOGLE_API_URL = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={SEARCH_ENGINE_ID}&q="
 
 # Hugging Face API configuration
 HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/"
-import os
-
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
-
 # Hugging Face model endpoints
-IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-base"
-IMAGE_GENERATION_MODEL = "stabilityai/stable-diffusion-2"
-OCR_MODEL = "microsoft/trocr-base-printed"
+IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
+IMAGE_GENERATION_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+OCR_MODEL = "Qwen/Qwen2-VL-2B-Instruct"
 
-# In-memory session and search tracking
+# In-memory storage with size limits
+MAX_SESSIONS = 1000
+MAX_SESSION_LENGTH = 20
+MAX_SEARCH_CONTEXTS = 1000
+
+# Data structures
 sessions = {}
-search_contexts = {}  # Enhanced structure to store search contexts
+search_contexts = {}
+
+# Request and response models
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    context: List[str] = []
+
+class SearchRequest(BaseModel):
+    query: str
+    user_id: str
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    user_id: Optional[str] = None
+
+class ApiResponse(BaseModel):
+    reply: Optional[str] = None
+    error: Optional[str] = None
+
+class ImageResponse(BaseModel):
+    image: Optional[str] = None
+    format: Optional[str] = None
+    prompt: Optional[str] = None
+    success: bool
+    error: Optional[str] = None
+
+class OCRResponse(BaseModel):
+    text: Optional[str] = None
+    success: bool
+    error: Optional[str] = None
+
+class ImageAnalysisResponse(BaseModel):
+    caption: Optional[str] = None
+    success: bool
+    error: Optional[str] = None
+
+# Dependency for request rate limiting
+class RateLimiter:
+    def __init__(self, max_rate=10, time_window=60):
+        self.max_rate = max_rate
+        self.time_window = time_window
+        self.requests = {}
+    
+    async def check(self, client_id: str):
+        now = asyncio.get_event_loop().time()
+        if client_id not in self.requests:
+            self.requests[client_id] = []
+        
+        # Clean old requests
+        self.requests[client_id] = [timestamp for timestamp in self.requests[client_id] 
+                                    if now - timestamp < self.time_window]
+        
+        # Check rate limit
+        if len(self.requests[client_id]) >= self.max_rate:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        
+        # Add current request
+        self.requests[client_id].append(now)
+        
+        # Cleanup old client_ids to prevent memory leak
+        if len(self.requests) > 1000:
+            oldest_clients = sorted(self.requests.keys(), 
+                                    key=lambda x: min(self.requests[x]) if self.requests[x] else now)
+            for old_client in oldest_clients[:100]:
+                del self.requests[old_client]
+                
+        return True
+
+rate_limiter = RateLimiter()
 
 # --- Advanced search context extraction ---
 def extract_search_context(text: str) -> Optional[str]:
     """Extract potential search topics from AI response with multiple methods"""
+    if not text:
+        return None
+        
     text = text.lower()
     search_context = None
     
@@ -132,16 +218,28 @@ def build_search_context_from_history(user_id: str) -> Dict[str, Any]:
     
     return context
 
+# Error handling middleware
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        logger.exception("Unhandled exception")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+        )
+
 # --- Chat Endpoint with Enhanced Context Awareness ---
-@app.post("/chat")
-async def chat(request: Request):
-    data = await request.json()
-    user_msg = data.get("message", "")
-    user_id = data.get("user_id", str(uuid.uuid4()))
-    context = data.get("context", [])
+@app.post("/chat", response_model=ApiResponse)
+async def chat(request: ChatRequest, _: bool = Depends(lambda: rate_limiter.check("chat"))):
+    user_msg = request.message
+    user_id = request.user_id
+    context = request.context
 
-    print(f"[{user_id}] Message received: {user_msg}")
+    logger.info(f"[{user_id}] Message received: {user_msg[:50]}...")
 
+    # Initialize user session if needed
     if user_id not in sessions:
         sessions[user_id] = [
             {"role": "system", "content":
@@ -149,18 +247,23 @@ async def chat(request: Request):
             }
         ]
 
+    # Process context if provided
     if context and len(context) > 0:
-        sessions[user_id] = sessions[user_id][:1]
+        sessions[user_id] = sessions[user_id][:1]  # Keep system message
         for msg in context:
             if msg.startswith("User: "):
                 sessions[user_id].append({"role": "user", "content": msg[6:]})
             elif msg.startswith("AI: "):
                 sessions[user_id].append({"role": "assistant", "content": msg[4:]})
-        if len(sessions[user_id]) > 20:
-            sessions[user_id] = sessions[user_id][-20:]
+        
+        # Enforce session length limit
+        if len(sessions[user_id]) > MAX_SESSION_LENGTH:
+            sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
 
+    # Add user message to session
     sessions[user_id].append({"role": "user", "content": user_msg})
 
+    # Prepare API request
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -174,7 +277,12 @@ async def chat(request: Request):
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(API_URL, headers=headers, json=payload, timeout=15)
+            response = await client.post(
+                API_URL, 
+                headers=headers, 
+                json=payload, 
+                timeout=15
+            )
             response.raise_for_status()
             reply = response.json()["choices"][0]["message"]["content"]
 
@@ -192,29 +300,43 @@ async def chat(request: Request):
                     context_data = build_search_context_from_history(user_id)
                     context_data["primary_topic"] = search_topic  # Override with extracted topic
                     search_contexts[user_id] = context_data
-                    print(f"[{user_id}] Extracted search context: {search_topic}")
+                    logger.info(f"[{user_id}] Extracted search context: {search_topic}")
 
             # Store the reply in session history
             sessions[user_id].append({"role": "assistant", "content": reply})
 
-            if len(sessions[user_id]) > 20:
-                sessions[user_id] = sessions[user_id][-20:]
+            # Enforce session length limit
+            if len(sessions[user_id]) > MAX_SESSION_LENGTH:
+                sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
 
-            print(f"[{user_id}] Reply sent: {reply[:60]}...")
+            # Clean up sessions if we have too many
+            if len(sessions) > MAX_SESSIONS:
+                # Remove oldest sessions
+                oldest_sessions = sorted(sessions.keys(), 
+                                       key=lambda x: len(sessions[x]))[:100]
+                for old_session in oldest_sessions:
+                    del sessions[old_session]
+
+            logger.info(f"[{user_id}] Reply sent: {reply[:60]}...")
             return {"reply": reply}
 
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[{user_id}] HTTP Error: {str(e)}")
+        return {"error": f"API Error: {e.response.status_code} - {e.response.text}"}
+    except httpx.RequestError as e:
+        logger.error(f"[{user_id}] Request Error: {str(e)}")
+        return {"error": f"Request Error: {str(e)}"}
     except Exception as e:
-        print(f"[{user_id}] Error: {str(e)}")
-        return {"reply": f"Error: {str(e)}"}
+        logger.error(f"[{user_id}] Error: {str(e)}")
+        return {"error": f"Error: {str(e)}"}
 
 # --- Improved Search Endpoint ---
-@app.post("/search")
-async def search(request: Request):
-    data = await request.json()
-    query = data.get("query", "").strip()
-    user_id = data.get("user_id", None)
+@app.post("/search", response_model=ApiResponse)
+async def search(request: SearchRequest, _: bool = Depends(lambda: rate_limiter.check("search"))):
+    query = request.query.strip()
+    user_id = request.user_id
 
-    print(f"[{user_id}] Incoming search query: '{query}'")
+    logger.info(f"[{user_id}] Incoming search query: '{query}'")
 
     if not user_id:
         return {"error": "Missing user ID. Cannot retrieve intent context."}
@@ -231,21 +353,21 @@ async def search(request: Request):
     if query.lower() in vague_phrases:
         if user_id in search_contexts and search_contexts[user_id]["primary_topic"]:
             search_query = search_contexts[user_id]["primary_topic"]
-            print(f"[{user_id}] Using stored search context: {search_query}")
+            logger.info(f"[{user_id}] Using stored search context: {search_query}")
         else:
             # If no stored context, build it from conversation history
             context_data = build_search_context_from_history(user_id)
             if context_data["primary_topic"]:
                 search_query = context_data["primary_topic"]
                 search_contexts[user_id] = context_data
-                print(f"[{user_id}] Built search context from history: {search_query}")
+                logger.info(f"[{user_id}] Built search context from history: {search_query}")
             else:
                 # Last resort: use the last user message
                 if user_id in sessions and len(sessions[user_id]) >= 3:
                     user_msgs = [msg for msg in sessions[user_id][-5:] if msg["role"] == "user"]
                     if user_msgs:
                         search_query = user_msgs[0]["content"]
-                        print(f"[{user_id}] Fallback to user message: {search_query}")
+                        logger.info(f"[{user_id}] Fallback to user message: {search_query}")
                     else:
                         return {"error": "Couldn't determine what to search for. Please be more specific."}
                 else:
@@ -255,14 +377,22 @@ async def search(request: Request):
         if user_id not in search_contexts:
             search_contexts[user_id] = build_search_context_from_history(user_id)
         search_contexts[user_id]["primary_topic"] = query
-        print(f"[{user_id}] Using direct search query and updating context: {query}")
+
+        # Clean up search contexts if we have too many
+        if len(search_contexts) > MAX_SEARCH_CONTEXTS:
+            # Remove 100 random contexts to prevent memory issues
+            contexts_to_remove = list(search_contexts.keys())[:100]
+            for ctx_id in contexts_to_remove:
+                del search_contexts[ctx_id]
+                
+        logger.info(f"[{user_id}] Using direct search query and updating context: {query}")
 
     # Execute the search
-    search_url = GOOGLE_API_URL.format(search_query)
+    search_url = GOOGLE_API_URL + search_query
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(search_url)
+            response = await client.get(search_url, timeout=10)
             response.raise_for_status()
             search_results = response.json().get("items", [])
 
@@ -276,26 +406,40 @@ async def search(request: Request):
             if user_id in sessions:
                 sessions[user_id].append({"role": "user", "content": f"[SEARCH QUERY: {search_query}]"})
                 sessions[user_id].append({"role": "assistant", "content": ai_response})
+                
+                # Enforce session length limit
+                if len(sessions[user_id]) > MAX_SESSION_LENGTH:
+                    sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
             
             return {"reply": ai_response}
 
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[{user_id}] Search HTTP Error: {str(e)}")
+        return {"error": f"Search API Error: {e.response.status_code} - {e.response.text}"}
+    except httpx.RequestError as e:
+        logger.error(f"[{user_id}] Search Request Error: {str(e)}")
+        return {"error": f"Search Request Error: {str(e)}"}
     except Exception as e:
-        print(f"[{user_id}] Search error: {str(e)}")
-        return {"error": str(e)}
+        logger.error(f"[{user_id}] Search error: {str(e)}")
+        return {"error": f"Search error: {str(e)}"}
 
 # --- Enhanced AI Summary with Context Awareness ---
 async def get_enhanced_ai_summary(search_results, query, user_id):
     # Prepare search snippets
-    search_text = "\n".join([f"Title: {item.get('title', '')}\nURL: {item.get('link', '')}\nDescription: {item.get('snippet', '')}" 
-                          for item in search_results[:5]])
+    search_text = "\n".join([
+        f"Title: {item.get('title', '')}\nURL: {item.get('link', '')}\nDescription: {item.get('snippet', '')}" 
+        for item in search_results[:5]
+    ])
     
     # Get conversation context
     context_prompt = ""
     if user_id in sessions and len(sessions[user_id]) > 1:
         # Get last few exchanges
         recent_messages = sessions[user_id][-6:]  # Last 6 messages
-        conversation_summary = "\n".join([f"{msg['role'].capitalize()}: {msg['content'][:100]}..." 
-                                       for msg in recent_messages])
+        conversation_summary = "\n".join([
+            f"{msg['role'].capitalize()}: {msg['content'][:100]}..." 
+            for msg in recent_messages
+        ])
         context_prompt = f"\nRecent conversation context:\n{conversation_summary}\n\n"
     
     # Add related terms if available
@@ -329,33 +473,47 @@ async def get_enhanced_ai_summary(search_results, query, user_id):
         "temperature": 0.7,
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(API_URL, headers=headers, json=payload, timeout=15)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                API_URL, 
+                headers=headers, 
+                json=payload, 
+                timeout=15
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"Error in AI summary: {str(e)}")
+        # Fallback summary if AI fails
+        return f"I found some results for '{query}', but I'm having trouble summarizing them right now. Here are the main links:\n" + \
+               "\n".join([f"- {item.get('title', '')}: {item.get('link', '')}" for item in search_results[:3]])
 
 # --- Image Analysis Endpoint (BLIP Image Captioning) ---
-@app.post("/image-analysis")
-async def analyze_image(file: UploadFile = File(...)):
+@app.post("/image-analysis", response_model=ImageAnalysisResponse)
+async def analyze_image(
+    file: UploadFile = File(...),
+    _: bool = Depends(lambda: rate_limiter.check("image"))
+):
     """
-    Analyze an image using Salesforce/blip-image-captioning-base model
+    Analyze an image using Salesforce/blip-image-captioning-large model
     """
     try:
         # Validate HUGGINGFACE_API_KEY
         if not HUGGINGFACE_API_KEY:
-            return {"error": "Hugging Face API key not configured"}
+            return {"error": "Hugging Face API key not configured", "success": False}
             
         # Validate file content type
         content_type = file.content_type
         if not content_type or not content_type.startswith('image/'):
-            return {"error": "Uploaded file must be an image"}
+            return {"error": "Uploaded file must be an image", "success": False}
         
         # Read image file
         image_content = await file.read()
         
         # Validate file size (Max 10MB)
         if len(image_content) > 10 * 1024 * 1024:
-            return {"error": "Image size exceeds the limit (max 10MB)"}
+            return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
         
         # Prepare API request
         headers = {
@@ -386,29 +544,31 @@ async def analyze_image(file: UploadFile = File(...)):
             else:
                 caption = str(result)
                 
-            print(f"Image analysis result: {caption[:50]}...")
+            logger.info(f"Image analysis result: {caption[:50]}...")
             return {"caption": caption, "success": True}
     
     except httpx.HTTPStatusError as e:
-        print(f"Image analysis HTTP error: {str(e)}")
+        logger.error(f"Image analysis HTTP error: {str(e)}")
         return {"error": f"API error: {e.response.status_code}", "success": False}
     except Exception as e:
-        print(f"Image analysis error: {str(e)}")
+        logger.error(f"Image analysis error: {str(e)}")
         return {"error": f"Failed to analyze image: {str(e)}", "success": False}
 
 # --- Image Generation Endpoint (Stable Diffusion) ---
-@app.post("/image-generation")
-async def generate_image(request: Request):
+@app.post("/image-generation", response_model=ImageResponse)
+async def generate_image(
+    request: ImageGenerationRequest,
+    _: bool = Depends(lambda: rate_limiter.check("image"))
+):
     """
-    Generate an image using stabilityai/stable-diffusion-2 model
+    Generate an image using stabilityai/stable-diffusion-xl-base-1.0 model
     """
     try:
         # Validate HUGGINGFACE_API_KEY
         if not HUGGINGFACE_API_KEY:
             return {"error": "Hugging Face API key not configured", "success": False}
             
-        data = await request.json()
-        prompt = data.get("prompt", "")
+        prompt = request.prompt
         
         if not prompt:
             return {"error": "Prompt is required for image generation", "success": False}
@@ -439,7 +599,7 @@ async def generate_image(request: Request):
             # Convert to base64 for response (frontend expects base64 for display)
             encoded_image = base64.b64encode(image_bytes).decode("utf-8")
             
-            print(f"Generated image for prompt: {prompt[:30]}...")
+            logger.info(f"Generated image for prompt: {prompt[:30]}...")
             return {
                 "image": encoded_image,
                 "format": "base64",
@@ -448,17 +608,20 @@ async def generate_image(request: Request):
             }
     
     except httpx.HTTPStatusError as e:
-        print(f"Image generation HTTP error: {str(e)}")
+        logger.error(f"Image generation HTTP error: {str(e)}")
         return {"error": f"API error: {e.response.status_code}", "success": False}
     except Exception as e:
-        print(f"Image generation error: {str(e)}")
+        logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-# --- OCR Endpoint (TrOCR) ---
-@app.post("/image-ocr")
-async def process_ocr(file: UploadFile = File(...)):
+# --- OCR Endpoint (Qwen VL) ---
+@app.post("/image-ocr", response_model=OCRResponse)
+async def process_ocr(
+    file: UploadFile = File(...),
+    _: bool = Depends(lambda: rate_limiter.check("image"))
+):
     """
-    Extract text from images using microsoft/trocr-base-printed model
+    Extract text from images using Qwen/Qwen2-VL-2B-Instruct model
     """
     try:
         # Validate HUGGINGFACE_API_KEY
@@ -496,7 +659,7 @@ async def process_ocr(file: UploadFile = File(...)):
             img.save(buffer, format="JPEG", quality=95)
             image_content = buffer.getvalue()
         except Exception as img_error:
-            print(f"Image optimization skipped: {str(img_error)}")
+            logger.warning(f"Image optimization skipped: {str(img_error)}")
             # Continue with original image if optimization fails
             pass
         
@@ -511,10 +674,18 @@ async def process_ocr(file: UploadFile = File(...)):
         
         # Send request to Hugging Face API
         async with httpx.AsyncClient() as client:
+            # For OCR with VL model, we need to provide a prompt
+            ocr_prompt = "What text is in this image? Extract all text content."
+            
             response = await client.post(
                 f"{HUGGINGFACE_API_URL}{OCR_MODEL}",
                 headers=headers,
-                json={"inputs": {"image": encoded_image}},
+                json={
+                    "inputs": {
+                        "image": encoded_image,
+                        "prompt": ocr_prompt
+                    }
+                },
                 timeout=90
             )
             response.raise_for_status()
@@ -529,17 +700,42 @@ async def process_ocr(file: UploadFile = File(...)):
             else:
                 extracted_text = str(result)
                 
-            print(f"OCR result: {extracted_text[:50]}...")
+            # Clean up response - remove the prompt if it's included in the response
+            if extracted_text.startswith(ocr_prompt):
+                extracted_text = extracted_text[len(ocr_prompt):].strip()
+            
+            logger.info(f"OCR result: {extracted_text[:50]}...")
             return {"text": extracted_text, "success": True}
     
     except httpx.HTTPStatusError as e:
-        print(f"OCR HTTP error: {str(e)}")
+        logger.error(f"OCR HTTP error: {str(e)}")
         return {"error": f"API error: {e.response.status_code}", "success": False}
     except Exception as e:
-        print(f"OCR error: {str(e)}")
+        logger.error(f"OCR error: {str(e)}")
         return {"error": f"Failed to extract text from image: {str(e)}", "success": False}
 
 # --- Health check ---
 @app.get("/ping")
 def ping():
     return {"message": "Lucid Core backend is up and running!"}
+
+# --- Status endpoint showing system health ---
+@app.get("/status")
+def status():
+    return {
+        "status": "online",
+        "version": "1.0.0",
+        "session_count": len(sessions),
+        "search_context_count": len(search_contexts),
+        "models": {
+            "chat": MODEL,
+            "image_captioning": IMAGE_CAPTIONING_MODEL,
+            "image_generation": IMAGE_GENERATION_MODEL,
+            "ocr": OCR_MODEL
+        }
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
