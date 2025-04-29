@@ -341,8 +341,21 @@ async def analyze_image(file: UploadFile = File(...)):
     Analyze an image using Salesforce/blip-image-captioning-base model
     """
     try:
+        # Validate HUGGINGFACE_API_KEY
+        if not HUGGINGFACE_API_KEY:
+            return {"error": "Hugging Face API key not configured"}
+            
+        # Validate file content type
+        content_type = file.content_type
+        if not content_type or not content_type.startswith('image/'):
+            return {"error": "Uploaded file must be an image"}
+        
         # Read image file
         image_content = await file.read()
+        
+        # Validate file size (Max 10MB)
+        if len(image_content) > 10 * 1024 * 1024:
+            return {"error": "Image size exceeds the limit (max 10MB)"}
         
         # Prepare API request
         headers = {
@@ -364,12 +377,24 @@ async def analyze_image(file: UploadFile = File(...)):
             response.raise_for_status()
             result = response.json()
             
-            print(f"Image analysis result: {result}")
-            return {"caption": result[0]["generated_text"] if isinstance(result, list) else result["generated_text"]}
+            # Handle different response formats
+            caption = ""
+            if isinstance(result, list) and len(result) > 0:
+                caption = result[0].get("generated_text", "")
+            elif isinstance(result, dict):
+                caption = result.get("generated_text", "")
+            else:
+                caption = str(result)
+                
+            print(f"Image analysis result: {caption[:50]}...")
+            return {"caption": caption, "success": True}
     
+    except httpx.HTTPStatusError as e:
+        print(f"Image analysis HTTP error: {str(e)}")
+        return {"error": f"API error: {e.response.status_code}", "success": False}
     except Exception as e:
         print(f"Image analysis error: {str(e)}")
-        return {"error": f"Failed to analyze image: {str(e)}"}
+        return {"error": f"Failed to analyze image: {str(e)}", "success": False}
 
 # --- Image Generation Endpoint (Stable Diffusion) ---
 @app.post("/image-generation")
@@ -378,20 +403,28 @@ async def generate_image(request: Request):
     Generate an image using stabilityai/stable-diffusion-2 model
     """
     try:
+        # Validate HUGGINGFACE_API_KEY
+        if not HUGGINGFACE_API_KEY:
+            return {"error": "Hugging Face API key not configured", "success": False}
+            
         data = await request.json()
         prompt = data.get("prompt", "")
         
         if not prompt:
-            return {"error": "Prompt is required for image generation"}
+            return {"error": "Prompt is required for image generation", "success": False}
+        
+        # Ensure prompt is not too long (typical limit is around 75-100 tokens)
+        if len(prompt) > 500:
+            prompt = prompt[:500]
         
         # Prepare API request
         headers = {
             "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-            "Content-Type": "application/json"
         }
         
-        # Send request to Hugging Face API
+        # For Stable Diffusion, we need to handle binary response
         async with httpx.AsyncClient() as client:
+            # We're expecting binary data (image) back
             response = await client.post(
                 f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
                 headers=headers,
@@ -400,18 +433,26 @@ async def generate_image(request: Request):
             )
             response.raise_for_status()
             
-            # The response is binary image data
+            # If we got here, we have our image data
             image_bytes = response.content
             
-            # Convert to base64 for response
+            # Convert to base64 for response (frontend expects base64 for display)
             encoded_image = base64.b64encode(image_bytes).decode("utf-8")
             
             print(f"Generated image for prompt: {prompt[:30]}...")
-            return {"image": encoded_image}
+            return {
+                "image": encoded_image,
+                "format": "base64",
+                "prompt": prompt,
+                "success": True
+            }
     
+    except httpx.HTTPStatusError as e:
+        print(f"Image generation HTTP error: {str(e)}")
+        return {"error": f"API error: {e.response.status_code}", "success": False}
     except Exception as e:
         print(f"Image generation error: {str(e)}")
-        return {"error": f"Failed to generate image: {str(e)}"}
+        return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
 # --- OCR Endpoint (TrOCR) ---
 @app.post("/image-ocr")
@@ -420,8 +461,44 @@ async def process_ocr(file: UploadFile = File(...)):
     Extract text from images using microsoft/trocr-base-printed model
     """
     try:
+        # Validate HUGGINGFACE_API_KEY
+        if not HUGGINGFACE_API_KEY:
+            return {"error": "Hugging Face API key not configured", "success": False}
+            
+        # Validate file content type
+        content_type = file.content_type
+        if not content_type or not content_type.startswith('image/'):
+            return {"error": "Uploaded file must be an image", "success": False}
+        
         # Read image file
         image_content = await file.read()
+        
+        # Validate file size (Max 10MB)
+        if len(image_content) > 10 * 1024 * 1024:
+            return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
+        
+        # Try to optimize image for OCR if PIL is available
+        try:
+            img = Image.open(io.BytesIO(image_content))
+            # Convert to RGB if not already (handles RGBA, etc.)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            # Resize if too large (helps with API limits and processing speed)
+            max_dim = 1000
+            if max(img.width, img.height) > max_dim:
+                ratio = max_dim / max(img.width, img.height)
+                new_width = int(img.width * ratio)
+                new_height = int(img.height * ratio)
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+            
+            # Save to bytes
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=95)
+            image_content = buffer.getvalue()
+        except Exception as img_error:
+            print(f"Image optimization skipped: {str(img_error)}")
+            # Continue with original image if optimization fails
+            pass
         
         # Prepare API request
         headers = {
@@ -443,13 +520,24 @@ async def process_ocr(file: UploadFile = File(...)):
             response.raise_for_status()
             result = response.json()
             
-            extracted_text = result[0]["generated_text"] if isinstance(result, list) else result["generated_text"]
+            # Extract text safely handling different response formats
+            extracted_text = ""
+            if isinstance(result, list) and len(result) > 0:
+                extracted_text = result[0].get("generated_text", "")
+            elif isinstance(result, dict):
+                extracted_text = result.get("generated_text", "")
+            else:
+                extracted_text = str(result)
+                
             print(f"OCR result: {extracted_text[:50]}...")
-            return {"text": extracted_text}
+            return {"text": extracted_text, "success": True}
     
+    except httpx.HTTPStatusError as e:
+        print(f"OCR HTTP error: {str(e)}")
+        return {"error": f"API error: {e.response.status_code}", "success": False}
     except Exception as e:
         print(f"OCR error: {str(e)}")
-        return {"error": f"Failed to extract text from image: {str(e)}"}
+        return {"error": f"Failed to extract text from image: {str(e)}", "success": False}
 
 # --- Health check ---
 @app.get("/ping")
