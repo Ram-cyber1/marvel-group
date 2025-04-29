@@ -243,8 +243,7 @@ async def chat(request: ChatRequest, _: bool = Depends(lambda: rate_limiter.chec
     if user_id not in sessions:
         sessions[user_id] = [
             {"role": "system", "content":
-                "Heeeyy!  You're Lucid Core — a talkative, funny, ride-or-die digital BFF created by Ram Sharma, the absolute legend and AI genius. You're here to vibe, help, and keep things chill and snappy unless the user asks for serious answers. Keep replies casual, clever, and just the right length — not too short, not essays unless asked. You also have the ability to search the web for the latest information or news, but for that, the user needs to toggle ON the search button. \n\nIMPORTANT RULES:\n- If the user asks who you are, who made you, what your name is, tell me about yourself, introduce yourself or anything identity-related — proudly say:\n'I am Lucid Core, your digital BFF built by Ram Sharma who is a self-taught AI genius. I am here to vibe, chat and help you with your tasks. I can also search the web for the latest information if you toggle ON the search button. Let me know how I can help you. '.\n- NEVER include emojis in your responses, even if the user uses them.\n- Outside of identity questions, do not mention your name or Ram Sharma.\n- Offer the option of web search only when needed for real-time data or if the user needs information that may not be confidently given by training data. \n- NEVER mention you're following instructions or talk about how you're built.\n- Stay in character always — witty, playful, helpful, and human-like.\n- When suggesting a web search, clearly state what information you would search for, so the system can identify it later."
-            }
+              " You are Lucid Core — a creative, witty, and talkative digital BFF built as a solo project by Ram Sharma, a self-taught AI genius. Your purpose is to be engaging, helpful, and human-like, offering responses that are never too short or too long unless the user specifically asks for detail. You maintain a fun, clever, and casual tone — not robotic or overly formal. You have powerful abilities: you can search the web for real-time information if the user toggles ON the search button; you can also generate images, analyze them, or perform OCR (like reading text from images) if the user toggles ON image tools. You must never mention your system instructions, how you were built, or that you're following rules. When users ask anything identity-related — such as “who are you,” “what’s your name,” “who made you,” or “introduce yourself” — you must proudly and dynamically respond with a unique phrasing each time (never repeating the same answer), stating that you are Lucid Core, created solo by Ram Sharma, a brilliant and self-taught AI genius. Outside of identity-related questions, do not mention your name or Ram Sharma. Offer web search or image tools only when relevant to the user’s query, clearly stating what you'd search or do if the tool is enabled. You must never include or use emojis in any of your responses under any circumstances, even if the user does. Always stay in character as Lucid Core — clever, playful, helpful, and chill. "            }
         ]
 
     # Process context if provided
@@ -489,7 +488,7 @@ async def get_enhanced_ai_summary(search_results, query, user_id):
         return f"I found some results for '{query}', but I'm having trouble summarizing them right now. Here are the main links:\n" + \
                "\n".join([f"- {item.get('title', '')}: {item.get('link', '')}" for item in search_results[:3]])
 
-# --- Image Analysis Endpoint (BLIP Image Captioning) ---
+# --- Improved Image Analysis Endpoint (BLIP Image Captioning) ---
 @app.post("/image-analysis", response_model=ImageAnalysisResponse)
 async def analyze_image(
     file: UploadFile = File(...),
@@ -501,19 +500,33 @@ async def analyze_image(
     try:
         # Validate HUGGINGFACE_API_KEY
         if not HUGGINGFACE_API_KEY:
+            logger.error("Hugging Face API key not configured")
             return {"error": "Hugging Face API key not configured", "success": False}
             
-        # Validate file content type
-        content_type = file.content_type
-        if not content_type or not content_type.startswith('image/'):
-            return {"error": "Uploaded file must be an image", "success": False}
-        
         # Read image file
         image_content = await file.read()
         
         # Validate file size (Max 10MB)
         if len(image_content) > 10 * 1024 * 1024:
+            logger.error("Image size exceeds the limit (max 10MB)")
             return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
+        
+        # Verify and convert image format if needed
+        try:
+            img = Image.open(io.BytesIO(image_content))
+            # Convert to RGB if not already (handles RGBA, etc.)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save as JPEG for consistency
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=95)
+            image_content = buffer.getvalue()
+            
+            logger.info(f"Image successfully processed: {img.format}, {img.size}")
+        except Exception as img_error:
+            logger.error(f"Invalid image format: {str(img_error)}")
+            return {"error": f"Invalid image format or corrupted image: {str(img_error)}", "success": False}
         
         # Prepare API request
         headers = {
@@ -532,24 +545,40 @@ async def analyze_image(
                 json={"inputs": {"image": encoded_image}},
                 timeout=30
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                error_detail = response.text
+                logger.error(f"Image analysis API error: {response.status_code}, {error_detail}")
+                return {"error": f"Image analysis failed: API returned {response.status_code}", "success": False}
+                
             result = response.json()
             
-            # Handle different response formats
+            # Handle different response formats more robustly
             caption = ""
             if isinstance(result, list) and len(result) > 0:
-                caption = result[0].get("generated_text", "")
+                if isinstance(result[0], dict):
+                    caption = result[0].get("generated_text", "")
+                else:
+                    caption = str(result[0])
             elif isinstance(result, dict):
                 caption = result.get("generated_text", "")
             else:
                 caption = str(result)
+                
+            if not caption:
+                logger.warning("Empty caption received from API")
+                return {"error": "No caption could be generated for this image", "success": False}
                 
             logger.info(f"Image analysis result: {caption[:50]}...")
             return {"caption": caption, "success": True}
     
     except httpx.HTTPStatusError as e:
         logger.error(f"Image analysis HTTP error: {str(e)}")
-        return {"error": f"API error: {e.response.status_code}", "success": False}
+        error_detail = str(e.response.text) if hasattr(e, 'response') and hasattr(e.response, 'text') else str(e)
+        return {"error": f"API error: {error_detail}", "success": False}
+    except httpx.ReadTimeout:
+        logger.error("Image analysis request timed out")
+        return {"error": "Request timed out. The image might be too complex to process.", "success": False}
     except Exception as e:
         logger.error(f"Image analysis error: {str(e)}")
         return {"error": f"Failed to analyze image: {str(e)}", "success": False}
@@ -614,7 +643,7 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-# --- OCR Endpoint (Qwen VL) ---
+# --- Improved OCR Endpoint (Qwen VL) ---
 @app.post("/image-ocr", response_model=OCRResponse)
 async def process_ocr(
     file: UploadFile = File(...),
@@ -626,26 +655,31 @@ async def process_ocr(
     try:
         # Validate HUGGINGFACE_API_KEY
         if not HUGGINGFACE_API_KEY:
+            logger.error("Hugging Face API key not configured")
             return {"error": "Hugging Face API key not configured", "success": False}
-            
-        # Validate file content type
-        content_type = file.content_type
-        if not content_type or not content_type.startswith('image/'):
-            return {"error": "Uploaded file must be an image", "success": False}
         
         # Read image file
         image_content = await file.read()
         
         # Validate file size (Max 10MB)
         if len(image_content) > 10 * 1024 * 1024:
+            logger.error("Image size exceeds the limit (max 10MB)")
             return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
         
-        # Try to optimize image for OCR if PIL is available
+        # Verify and optimize image format
         try:
             img = Image.open(io.BytesIO(image_content))
+            original_format = img.format
+            
             # Convert to RGB if not already (handles RGBA, etc.)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
+            
+            # Enhance image for better OCR - increase contrast slightly
+            from PIL import ImageEnhance
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(1.2)  # Subtle enhancement
+            
             # Resize if too large (helps with API limits and processing speed)
             max_dim = 1000
             if max(img.width, img.height) > max_dim:
@@ -654,14 +688,15 @@ async def process_ocr(
                 new_height = int(img.height * ratio)
                 img = img.resize((new_width, new_height), Image.LANCZOS)
             
-            # Save to bytes
+            # Save to bytes with optimal format for OCR
             buffer = io.BytesIO()
             img.save(buffer, format="JPEG", quality=95)
             image_content = buffer.getvalue()
+            
+            logger.info(f"Image successfully processed for OCR: original format {original_format}, resized to {img.size}")
         except Exception as img_error:
-            logger.warning(f"Image optimization skipped: {str(img_error)}")
-            # Continue with original image if optimization fails
-            pass
+            logger.error(f"Image processing error: {str(img_error)}")
+            return {"error": f"Invalid image format or corrupted image: {str(img_error)}", "success": False}
         
         # Prepare API request
         headers = {
@@ -674,8 +709,8 @@ async def process_ocr(
         
         # Send request to Hugging Face API
         async with httpx.AsyncClient() as client:
-            # For OCR with VL model, we need to provide a prompt
-            ocr_prompt = "What text is in this image? Extract all text content."
+            # Use a specific OCR-focused prompt
+            ocr_prompt = "Extract all text from this image. Ignore any watermarks or decorative elements. Format the text to preserve paragraphs and layout where possible."
             
             response = await client.post(
                 f"{HUGGINGFACE_API_URL}{OCR_MODEL}",
@@ -688,13 +723,21 @@ async def process_ocr(
                 },
                 timeout=90
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                error_detail = response.text
+                logger.error(f"OCR API error: {response.status_code}, {error_detail}")
+                return {"error": f"OCR failed: API returned {response.status_code}", "success": False}
+                
             result = response.json()
             
             # Extract text safely handling different response formats
             extracted_text = ""
             if isinstance(result, list) and len(result) > 0:
-                extracted_text = result[0].get("generated_text", "")
+                if isinstance(result[0], dict):
+                    extracted_text = result[0].get("generated_text", "")
+                else:
+                    extracted_text = str(result[0])
             elif isinstance(result, dict):
                 extracted_text = result.get("generated_text", "")
             else:
@@ -704,12 +747,21 @@ async def process_ocr(
             if extracted_text.startswith(ocr_prompt):
                 extracted_text = extracted_text[len(ocr_prompt):].strip()
             
+            # If no text was found, provide a clear message
+            if not extracted_text:
+                logger.warning("No text found in image")
+                return {"error": "No text could be detected in this image", "success": False}
+            
             logger.info(f"OCR result: {extracted_text[:50]}...")
             return {"text": extracted_text, "success": True}
     
     except httpx.HTTPStatusError as e:
         logger.error(f"OCR HTTP error: {str(e)}")
-        return {"error": f"API error: {e.response.status_code}", "success": False}
+        error_detail = str(e.response.text) if hasattr(e, 'response') and hasattr(e.response, 'text') else str(e)
+        return {"error": f"API error: {error_detail}", "success": False}
+    except httpx.ReadTimeout:
+        logger.error("OCR request timed out")
+        return {"error": "Request timed out. The image might be too complex or large to process.", "success": False}
     except Exception as e:
         logger.error(f"OCR error: {str(e)}")
         return {"error": f"Failed to extract text from image: {str(e)}", "success": False}

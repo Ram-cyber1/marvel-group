@@ -6,3 +6,6 @@ httpx
 google-api-python-client
 Pillow
 python-multipart
+pydantic
+asyncio
+starlette
