@@ -919,9 +919,9 @@ async def image_ocr(
             processed_response = await process_with_llm(extracted_text, query, user_id)
             logger.info(f"LLM processing successful: {len(processed_response)} chars in response")
             
-            # Return the final response to the client
+            # Return the final response to the client - UPDATED TO MATCH FRONTEND
             return {
-                "response": processed_response,
+                "text": processed_response,  # Changed from "response" to "text" to match frontend
                 "success": True
             }
         except Exception as llm_error:
