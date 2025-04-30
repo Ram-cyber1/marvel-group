@@ -903,6 +903,9 @@ async def image_ocr(
         # Extract text from image via OCR.space
         try:
             extracted_text = await extract_text_with_ocr_space(image_content)
+print("Extracted Text:", extracted_text)
+print("Processed Response:", processed_response)
+
             
             if not extracted_text or len(extracted_text.strip()) < 5:  # Minimum text threshold
                 logger.warning("No meaningful text extracted from image")
@@ -1001,8 +1004,6 @@ async def image_ocr(
                     
                 logger.info(f"[{user_id}] Added OCR analysis to chat context")
 
-print("Extracted Text:", extracted_text)
-print("Processed Response:", processed_response)
 
             
             return {
