@@ -1072,8 +1072,6 @@ async def reset_context(request: Request):
     else:
         return {"message": "No session found to reset"}
 
-if _name_ == "_main_":
-    import uvicorn
+if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
-
