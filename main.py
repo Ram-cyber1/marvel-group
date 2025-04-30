@@ -14,6 +14,8 @@ from starlette.responses import JSONResponse
 import logging
 import json
 from datetime import datetime
+from typing import Optional, List, Dict, Any
+
 
 # Set up logging
 logging.basicConfig(
@@ -97,11 +99,6 @@ class ImageResponse(BaseModel):
     success: bool
     error: Optional[str] = None
 
-class OCRResponse(BaseModel):
-    text: Optional[str] = None
-    processed_response: Optional[str] = None
-    success: bool
-    error: Optional[str] = None
 
 class ImageAnalysisResponse(BaseModel):
     caption: Optional[str] = None
@@ -855,57 +852,7 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-import io
-import logging
-from fastapi import FastAPI, UploadFile, File, Form, Depends
-import httpx
-from PIL import Image
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# API Keys and Constants
-OCR_SPACE_API_KEY = "YOUR_OCR_SPACE_API_KEY"
-API_KEY = "YOUR_API_KEY"
-API_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "your_model_id"
-MAX_SESSION_LENGTH = 10
-
-# FastAPI App
-app = FastAPI()
-
-# Pydantic Response Model
-class ImageOCRResponse(BaseModel):
-    text: str
-    success: bool
-    error: str = None
-
-# Sessions storage (mock)
-sessions = {}
-
-# Rate Limiter (dummy function for now)
-class RateLimiter:
-    def check(self, action: str):
-        return True
-rate_limiter = RateLimiter()
-
-# Utility to extract text using OCR.space API
-async def extract_text_with_ocr_space(image_bytes: bytes) -> str:
-    """
-    Extract text from an image using OCR.space API.
-    """
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.ocr.space/parse/image",
-            headers={"apikey": OCR_SPACE_API_KEY},
-            files={"file": ("image.jpg", image_bytes)},
-            data={"language": "eng", "isOverlayRequired": False}
-        )
-        result = response.json()
-        return result["ParsedResults"][0]["ParsedText"]
-
-# Image OCR endpoint
 @app.post("/image-ocr", response_model=ImageOCRResponse)
 async def image_ocr(
     file: UploadFile = File(...),
@@ -914,109 +861,186 @@ async def image_ocr(
     _: bool = Depends(lambda: rate_limiter.check("ocr"))
 ):
     """
-    Extract text from images using OCR and process it using the chat model
+    Extract text from images using OCR and process it using the LLM to return a meaningful response
     """
     try:
-        logger.info("🔍 Starting OCR endpoint...")
-
+        logger.info(f"Processing OCR request: user_id={user_id}, query={query[:30]}{'...' if len(query) > 30 else ''}")
+        
+        # Validate API keys
+        if not API_KEY:
+            logger.error("LLM API key not configured")
+            return {"error": "API key not configured", "success": False}
+            
+        if not OCR_SPACE_API_KEY:
+            logger.error("OCR Space API key not configured")
+            return {"error": "OCR API key not configured", "success": False}
+        
         # Read image file
         image_content = await file.read()
-        logger.info(f"📸 Received file: {file.filename}, Size: {len(image_content)} bytes")
-
+        logger.info(f"Image received: filename={file.filename}, size={len(image_content)/1024:.2f}KB")
+        
         # Validate file size (Max 10MB)
         if len(image_content) > 10 * 1024 * 1024:
-            logger.error("❌ Image size exceeds the limit (max 10MB)")
+            logger.error("Image size exceeds the limit (max 10MB)")
             return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
-
+        
         # Verify and convert image format if needed
         try:
             img = Image.open(io.BytesIO(image_content))
+            # Convert to RGB if not already (handles RGBA, etc.)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
+            
+            # Save as JPEG for consistency
             buffer = io.BytesIO()
             img.save(buffer, format="JPEG", quality=95)
             image_content = buffer.getvalue()
-            logger.info(f"✅ Image processed: {img.format}, Size: {img.size}")
+            
+            logger.info(f"Image successfully processed: {img.format}, {img.size}")
         except Exception as img_error:
-            logger.error(f"❌ Invalid image format: {str(img_error)}")
+            logger.error(f"Invalid image format: {str(img_error)}")
             return {"error": f"Invalid image format or corrupted image: {str(img_error)}", "success": False}
-
+        
         # Extract text from image via OCR.space
         try:
             extracted_text = await extract_text_with_ocr_space(image_content)
-            if not extracted_text or len(extracted_text.strip()) < 5:
+            
+            if not extracted_text or len(extracted_text.strip()) < 5:  # Minimum text threshold
                 logger.warning("No meaningful text extracted from image")
                 return {"error": "No meaningful text could be extracted from the image", "success": False}
-            logger.info(f"✅ OCR text extracted ({len(extracted_text)} chars)")
+                
+            logger.info(f"OCR extraction successful: {len(extracted_text)} chars extracted")
         except Exception as ocr_error:
-            logger.error(f"❌ OCR failed: {str(ocr_error)}")
+            logger.error(f"OCR extraction failed: {str(ocr_error)}")
             return {"error": f"Failed to extract text from image: {str(ocr_error)}", "success": False}
+        
+        # Process the extracted text with the LLM
+        try:
+            processed_response = await process_with_llm(extracted_text, query, user_id)
+            logger.info(f"LLM processing successful: {len(processed_response)} chars in response")
+            
+            # Return the final response to the client
+            return {
+                "response": processed_response,
+                "success": True
+            }
+        except Exception as llm_error:
+            logger.error(f"LLM processing failed: {str(llm_error)}")
+            return {"error": f"Failed to process extracted text: {str(llm_error)}", "success": False}
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"OCR processing HTTP error: {str(e)}")
+        error_detail = str(e.response.text) if hasattr(e, 'response') and hasattr(e.response, 'text') else str(e)
+        return {"error": f"API error: {error_detail}", "success": False}
+    except httpx.ReadTimeout:
+        logger.error("OCR processing request timed out")
+        return {"error": "Request timed out. The text might be too complex to process.", "success": False}
+    except Exception as e:
+        logger.error(f"OCR processing error: {str(e)}", exc_info=True)
+        return {"error": f"Failed to process OCR image: {str(e)}", "success": False}
 
-        # Prepare user query and extracted text for LLM processing
-        user_query = query.strip() if query else "Summarize the text from this image"
+async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
+    """
+    Extract text from image using OCR.space API
+    """
+    try:
+        logger.info("Starting OCR.space text extraction")
         
-        # Create system message based on the user's query
-        system_message = (
-            "You are Lucid Core, an expert text analyst specializing in interpreting extracted text from images. "
-            "Your task is to analyze the text that has been extracted from an image using OCR technology and "
-            "provide a helpful response based on the user's query. If the text appears to be incomplete or "
-            "contains errors, use your knowledge to make reasonable inferences. "
-            "Be conversational and helpful, focusing on addressing the user's question about the text."
+        # Encode the image as base64
+        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Prepare API request
+        payload = {
+            "base64Image": f"data:image/jpeg;base64,{encoded_image}",
+            "language": "eng",
+            "isOverlayRequired": False,
+            "scale": True,
+            "OCREngine": 2  # More accurate engine
+        }
+
+        headers = {
+            "apikey": OCR_SPACE_API_KEY
+        }
+
+        async with httpx.AsyncClient() as client:
+            logger.info("Sending request to OCR.space API")
+            response = await client.post(
+                OCR_SPACE_API_URL,
+                data=payload,
+                headers=headers,
+                timeout=30
+            )
+
+            result = response.json()
+
+            if not result.get("IsErroredOnProcessing") and result.get("ParsedResults"):
+                extracted_text = result["ParsedResults"][0]["ParsedText"].strip()
+                logger.info(f"OCR.space extracted {len(extracted_text)} characters of text")
+                return extracted_text
+
+            error_message = result.get('ErrorMessage', 'Unknown OCR error')
+            logger.warning(f"OCR Space error: {error_message}")
+            return None
+
+    except Exception as e:
+        logger.error(f"OCR Space extraction failed: {str(e)}", exc_info=True)
+        raise
+
+async def process_with_llm(extracted_text: str, user_query: str, user_id: Optional[str]) -> str:
+    """
+    Use LLM model to process extracted image text and answer the user's query
+    """
+    try:
+        logger.info("Processing extracted text with LLM")
+        
+        # Default query if none provided
+        user_query = user_query.strip() if user_query else "Summarize the text from this image"
+        
+        system_prompt = (
+            "You are Lucid Core, a brilliant assistant created by Ram Sharma. "
+            "A user uploaded an image. You extracted some text from it. "
+            "Use the text and respond naturally to their question. If they didn't ask a question, "
+            "briefly summarize the image content or mention what you understood."
         )
-        
-        # Prepare the prompt for the LLM
-        prompt = (
-            f"I have extracted the following text from an image using OCR technology:\n\n"
-            f"\n{extracted_text}\n\n\n"
-            f"The user's question or request about this text is: \"{user_query}\"\n\n"
-            f"Please provide a helpful response addressing the user's query based on the extracted text."
+
+        # Merge the extracted text and user query
+        combined_prompt = (
+            f"[Extracted text from image]:\n{extracted_text}\n\n"
+            f"[User's message]:\n{user_query}"
         )
-        
-        # Prepare API request to our chat model
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": combined_prompt}
+        ]
+
+        # Add last few context messages (excluding old system prompts)
+        if user_id and user_id in sessions:
+            context_messages = [msg for msg in sessions[user_id][-4:] if msg["role"] != "system"]
+            messages = [{"role": "system", "content": system_prompt}] + context_messages + [{"role": "user", "content": combined_prompt}]
+
+        payload = {
+            "model": MODEL,
+            "messages": messages,
+            "temperature": 0.6
+        }
+
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
-        
-        # Add recent conversation history if available
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": prompt}
-        ]
-        
-        # Include relevant conversation history if user_id is provided
-        if user_id and user_id in sessions:
-            context_messages = []
-            for msg in sessions[user_id][-4:]:  # Get last 4 messages
-                if msg["role"] != "system":  # Skip system messages
-                    context_messages.append(msg)
-            
-            if context_messages:
-                # Insert context messages between system and user message
-                messages = [messages[0]] + context_messages + [messages[1]]
-        
-        payload = {
-            "model": MODEL,
-            "messages": messages,
-            "temperature": 0.6,
-        }
-        
+
+        logger.info(f"Sending request to LLM API with {len(messages)} messages")
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                API_URL, 
-                headers=headers, 
-                json=payload, 
-                timeout=20
+                API_URL,
+                headers=headers,
+                json=payload,
+                timeout=15
             )
-            
-            if response.status_code != 200:
-                error_detail = response.text
-                logger.error(f"OCR text processing API error: {response.status_code}, {error_detail}")
-                return {"error": f"OCR text processing failed: API returned {response.status_code}", "success": False}
-                
+            response.raise_for_status()
             result = response.json()
-            processed_response = result["choices"][0]["message"]["content"]
-            logger.info(f"✅ AI response received ({len(processed_response)} chars)")
+            reply = result["choices"][0]["message"]["content"]
             
             # Add to session history if we have a user_id
             if user_id:
@@ -1026,11 +1050,11 @@ async def image_ocr(
                 # Add a special message pair to maintain context
                 sessions[user_id].append({
                     "role": "user", 
-                    "content": f"[OCR IMAGE QUERY]: {user_query}\n\nExtracted text: {extracted_text[:150]}..." if len(extracted_text) > 150 else extracted_text
+                    "content": f"[OCR IMAGE QUERY]: {user_query}\n\nExtracted text: {extracted_text[:150]}{'...' if len(extracted_text) > 150 else ''}"
                 })
                 sessions[user_id].append({
                     "role": "assistant", 
-                    "content": f"[OCR RESPONSE]: {processed_response}"
+                    "content": f"[OCR RESPONSE]: {reply}"
                 })
                 
                 # Enforce session length limit
@@ -1038,13 +1062,16 @@ async def image_ocr(
                     sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
                     
                 logger.info(f"[{user_id}] Added OCR analysis to chat context")
+            
+            return reply.strip()
 
-            return {"text": processed_response, "success": True}
-
+    except httpx.HTTPStatusError as e:
+        logger.error(f"LLM API error: Status {e.response.status_code}")
+        logger.error(f"Response: {e.response.text}")
+        raise HTTPException(status_code=500, detail=f"LLM API error: {e.response.status_code}")
     except Exception as e:
-        logger.error(f"Error in OCR endpoint: {str(e)}")
-        return {"error": f"Unexpected error: {str(e)}", "success": False}
-
+        logger.error(f"LLM processing failed: {str(e)}", exc_info=True)
+        raise
 
 # --- Context Reset Endpoint ---
 @app.post("/reset-context")
