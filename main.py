@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, File, UploadFile, Form, HTTPException, Depends
+from fastapi import FastAPI, Request, File, UploadFile, Query, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uuid
