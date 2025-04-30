@@ -1000,6 +1000,10 @@ async def image_ocr(
                     sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
                     
                 logger.info(f"[{user_id}] Added OCR analysis to chat context")
+
+print("Extracted Text:", extracted_text)
+print("Processed Response:", processed_response)
+
             
             return {
     "text": processed_response,  # This is the key your frontend is expecting
