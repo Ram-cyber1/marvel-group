@@ -848,7 +848,6 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-# --- OCR Endpoint with Context Enhancement ---
 @app.post("/image-ocr", response_model=OCRResponse)
 async def image_ocr(
     file: UploadFile = File(...),
@@ -857,7 +856,7 @@ async def image_ocr(
     _: bool = Depends(lambda: rate_limiter.check("ocr"))
 ):
     """
-    Extract text from images using OCR and optionally process with LLM
+    Extract text from images using OCR and answer user's query with Lucid Core
     """
     try:
         # Read image file
@@ -870,54 +869,44 @@ async def image_ocr(
         if len(image_bytes) > 10 * 1024 * 1024:
             return {"error": "Image too large (max 10MB)", "success": False}
             
-        # Send image to OCR Space API
+        # Extract text from image via OCR.space
         extracted_text = await extract_text_with_ocr_space(image_bytes)
         
         if not extracted_text:
             return {"error": "No text found in image or OCR failed", "success": False}
-            
-        # If the user provided a message, process the OCR text with our LLM
-        processed_response = None
-        if user_message and user_message.strip():
-            processed_response = await process_with_groq_llm(extracted_text, user_message, user_id)
-        
-        # Always add to session history if we have a user_id - IMPROVEMENT FOR CONTEXT
-        if user_id and user_id in sessions:
-            # Add OCR results to session context
-            ocr_context = f"OCR EXTRACTED TEXT:\n{extracted_text}"
-            
-            # Add a special message pair to maintain context
+
+        # Process with AI model directly — this will be the only visible result
+        processed_response = await process_with_groq_llm(extracted_text, user_message, user_id)
+
+        # Save to session context
+        if user_id:
+            if user_id not in sessions:
+                sessions[user_id] = []
+
             sessions[user_id].append({
-                "role": "user", 
-                "content": f"[OCR REQUEST]: User uploaded an image for text extraction{' with query: ' + user_message if user_message else ''}"
+                "role": "user",
+                "content": f"[OCR IMAGE UPLOADED] + user query: {user_message or '[no message]'}"
             })
-            
-            if processed_response:
-                sessions[user_id].append({
-                    "role": "assistant", 
-                    "content": f"[OCR RESULT]: I extracted the following text from your image and analyzed it:\n\n{extracted_text}\n\n{processed_response}"
-                })
-            else:
-                sessions[user_id].append({
-                    "role": "assistant", 
-                    "content": f"[OCR RESULT]: I extracted the following text from your image:\n\n{extracted_text}"
-                })
-            
-            # Enforce session length limit
+
+            sessions[user_id].append({
+                "role": "assistant",
+                "content": f"[OCR RESULT REPLY]:\n{processed_response}"
+            })
+
+            # Enforce session length cap
             if len(sessions[user_id]) > MAX_SESSION_LENGTH:
                 sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
-                
-            logger.info(f"[{user_id}] Added OCR results to chat context")
-            
+
         return {
             "text": extracted_text,
             "processed_response": processed_response,
             "success": True
         }
-        
+
     except Exception as e:
         logger.error(f"OCR process error: {str(e)}")
         return {"error": f"OCR process error: {str(e)}", "success": False}
+
 
 async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
     """
@@ -960,49 +949,46 @@ async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
         logger.error(f"OCR Space extraction failed: {str(e)}")
         return None
 
+
 async def process_with_groq_llm(extracted_text: str, user_query: str, user_id: Optional[str]) -> str:
     """
-    Process extracted OCR text with LLM based on user query
+    Use Lucid Core's model to process extracted image text and answer user's query
     """
     try:
-        # Create system prompt for LLM
         system_prompt = (
-            "You are Lucid Core, a smart AI that helps users understand text extracted from images. "
-            "A user uploaded an image, and you've extracted the following text from it. "
-            "Use this to answer their query clearly and accurately. Be natural and helpful."
+            "You are Lucid Core, a brilliant assistant created by Ram Sharma. "
+            "A user uploaded an image. You extracted some text from it. "
+            "Use the text and respond naturally to their question. If they didn’t ask a question, "
+            "briefly summarize the image content or mention what you understood."
         )
-        
-        # Combine extracted text and user query
+
+        # Merge into prompt
         combined_prompt = (
-            f"Extracted text from image:\n\n{extracted_text}\n\n"
-            f"User query about this text: {user_query}"
+            f"[Extracted text from image]:\n{extracted_text}\n\n"
+            f"[User's message]:\n{user_query or 'No specific question provided'}"
         )
-        
-        # Prepare messages for API request
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": combined_prompt}
         ]
-        
-        # Add recent conversation context if available
+
+        # Add last few context messages (excluding old system prompts)
         if user_id and user_id in sessions:
-            # Get last few messages for context, but exclude system message
             context_messages = [msg for msg in sessions[user_id][-4:] if msg["role"] != "system"]
-            if context_messages:
-                messages = [{"role": "system", "content": system_prompt}] + context_messages + [{"role": "user", "content": combined_prompt}]
-        
-        # Prepare API request
+            messages = [{"role": "system", "content": system_prompt}] + context_messages + [{"role": "user", "content": combined_prompt}]
+
         payload = {
             "model": MODEL,
             "messages": messages,
-            "temperature": 0.5
+            "temperature": 0.6
         }
-        
+
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 API_URL,
@@ -1010,17 +996,14 @@ async def process_with_groq_llm(extracted_text: str, user_query: str, user_id: O
                 json=payload,
                 timeout=15
             )
-            
             response.raise_for_status()
             result = response.json()
-            
             reply = result["choices"][0]["message"]["content"]
-            
-            return reply
-            
+            return reply.strip()
+
     except Exception as e:
         logger.error(f"LLM processing failed: {str(e)}")
-        return f"Error processing your request: {str(e)}"
+        return "Sorry, I had trouble processing the image text with your question."
 
 # --- Health check ---
 @app.get("/ping")
