@@ -488,14 +488,15 @@ async def get_enhanced_ai_summary(search_results, query, user_id):
         return f"I found some results for '{query}', but I'm having trouble summarizing them right now. Here are the main links:\n" + \
                "\n".join([f"- {item.get('title', '')}: {item.get('link', '')}" for item in search_results[:3]])
 
-# --- Enhanced Image Analysis for Detailed Descriptions ---
+# --- Enhanced Image Analysis with Concise Option ---
 @app.post("/image-analysis", response_model=ImageAnalysisResponse)
 async def analyze_image(
     file: UploadFile = File(...),
+    detailed: bool = Query(False, description="Set to true for detailed analysis"),
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Analyze an image using the chat model for detailed descriptions
+    Analyze an image using the chat model with option for concise or detailed descriptions
     """
     try:
         # Validate API keys
@@ -565,25 +566,34 @@ async def analyze_image(
                 logger.warning(f"Failed to get basic caption: {str(caption_error)}")
                 # Continue anyway - we'll use the LLM for analysis
         
-        # Now use our main chat model for detailed analysis
+        # Now use our main chat model for analysis
         # Convert image to base64 for API storage
         encoded_image_b64 = base64.b64encode(image_content).decode("utf-8")
         
-        # Create analysis prompt
-        analysis_prompt = (
-            "I'm providing an image for you to analyze in detail. Please give a comprehensive description covering:\n"
-            "1. Main subjects and objects in the image\n"
-            "2. Scene setting, background, and environment\n"
-            "3. Colors, lighting, composition, and visual style\n"
-            "4. Any text visible in the image\n"
-            "5. Mood or emotion conveyed\n"
-            "6. Any cultural or contextual significance\n\n"
-        )
-        
-        if basic_caption:
-            analysis_prompt += f"Initial caption from image recognition: {basic_caption}\n\n"
-            
-        analysis_prompt += "Please provide a detailed, multi-paragraph analysis that would help someone fully understand what's in this image."
+        # Create analysis prompt based on detail level requested
+        if detailed:
+            analysis_prompt = (
+                "I'm providing an image for you to analyze in detail. Please give a comprehensive description covering:\n"
+                "1. Main subjects and objects in the image\n"
+                "2. Scene setting, background, and environment\n"
+                "3. Colors, lighting, composition, and visual style\n"
+                "4. Any text visible in the image\n"
+                "5. Mood or emotion conveyed\n"
+                "6. Any cultural or contextual significance\n\n"
+            )
+            if basic_caption:
+                analysis_prompt += f"Initial caption from image recognition: {basic_caption}\n\n"
+            analysis_prompt += "Please provide a detailed, multi-paragraph analysis that would help someone fully understand what's in this image."
+        else:
+            analysis_prompt = (
+                "I'm providing an image for analysis. Please give a concise description (about 120 words) in a single paragraph that captures:\n"
+                "- The main subject(s) and setting\n"
+                "- Key visual elements and any visible text\n"
+                "- Overall mood or context\n\n"
+            )
+            if basic_caption:
+                analysis_prompt += f"Initial caption from image recognition: {basic_caption}\n\n"
+            analysis_prompt += "Keep your response to approximately 120 words in a single paragraph."
         
         # Prepare API request to our chat model
         headers = {
@@ -591,14 +601,22 @@ async def analyze_image(
             "Content-Type": "application/json"
         }
 
-        # Create custom system message for analysis
-        system_message = (
-            "You are Lucid Core, an expert image analyst with keen attention to detail. "
-            "Your task is to provide detailed, insightful descriptions of images. "
-            "Be thorough but stay natural and conversational, avoiding analytical jargon when possible. "
-            "Structure your response in 3-5 paragraphs to cover different aspects of the image. "
-            "Avoid saying 'I see' or 'I can see' repeatedly."
-        )
+        # Create custom system message based on detail level
+        if detailed:
+            system_message = (
+                "You are Lucid Core, an expert image analyst with keen attention to detail. "
+                "Your task is to provide detailed, insightful descriptions of images. "
+                "Be thorough but stay natural and conversational, avoiding analytical jargon when possible. "
+                "Structure your response in 3-5 paragraphs to cover different aspects of the image. "
+                "Avoid saying 'I see' or 'I can see' repeatedly."
+            )
+        else:
+            system_message = (
+                "You are Lucid Core, an expert image analyst specializing in concise descriptions. "
+                "Your task is to provide a single paragraph summary (about 120 words) that captures the essential elements "
+                "of the image. Be precise and informative while remaining concise. Focus only on the most important aspects "
+                "that would give someone a clear understanding of what's in the image."
+            )
 
         payload = {
             "model": MODEL,
@@ -623,10 +641,10 @@ async def analyze_image(
                 return {"error": f"Image analysis failed: API returned {response.status_code}", "success": False}
                 
             result = response.json()
-            detailed_caption = result["choices"][0]["message"]["content"]
+            caption = result["choices"][0]["message"]["content"]
                 
-            logger.info(f"Detailed image analysis generated: {len(detailed_caption)} chars")
-            return {"caption": detailed_caption, "success": True}
+            logger.info(f"Image analysis generated: {len(caption)} chars, detailed={detailed}")
+            return {"caption": caption, "success": True}
     
     except httpx.HTTPStatusError as e:
         logger.error(f"Image analysis HTTP error: {str(e)}")
