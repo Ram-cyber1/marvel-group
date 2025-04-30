@@ -488,20 +488,20 @@ async def get_enhanced_ai_summary(search_results, query, user_id):
         return f"I found some results for '{query}', but I'm having trouble summarizing them right now. Here are the main links:\n" + \
                "\n".join([f"- {item.get('title', '')}: {item.get('link', '')}" for item in search_results[:3]])
 
-# --- Improved Image Analysis Endpoint (BLIP Image Captioning) ---
+# --- Enhanced Image Analysis for Detailed Descriptions ---
 @app.post("/image-analysis", response_model=ImageAnalysisResponse)
 async def analyze_image(
     file: UploadFile = File(...),
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Analyze an image using Salesforce/blip-image-captioning-large model
+    Analyze an image using the chat model for detailed descriptions
     """
     try:
-        # Validate HUGGINGFACE_API_KEY
-        if not HUGGINGFACE_API_KEY:
-            logger.error("Hugging Face API key not configured")
-            return {"error": "Hugging Face API key not configured", "success": False}
+        # Validate API keys
+        if not API_KEY:
+            logger.error("Chat API key not configured")
+            return {"error": "API key not configured", "success": False}
             
         # Read image file
         image_content = await file.read()
@@ -527,23 +527,94 @@ async def analyze_image(
         except Exception as img_error:
             logger.error(f"Invalid image format: {str(img_error)}")
             return {"error": f"Invalid image format or corrupted image: {str(img_error)}", "success": False}
+
+        # First get a basic caption using Hugging Face (if available)
+        basic_caption = ""
+        if HUGGINGFACE_API_KEY:
+            try:
+                encoded_image = base64.b64encode(image_content).decode("utf-8")
+                headers = {
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{HUGGINGFACE_API_URL}{IMAGE_CAPTIONING_MODEL}",
+                        headers=headers,
+                        json={"inputs": {"image": encoded_image}},
+                        timeout=15
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        
+                        # Handle different response formats
+                        if isinstance(result, list) and len(result) > 0:
+                            if isinstance(result[0], dict):
+                                basic_caption = result[0].get("generated_text", "")
+                            else:
+                                basic_caption = str(result[0])
+                        elif isinstance(result, dict):
+                            basic_caption = result.get("generated_text", "")
+                        else:
+                            basic_caption = str(result)
+                            
+                        logger.info(f"Basic caption: {basic_caption}")
+            except Exception as caption_error:
+                logger.warning(f"Failed to get basic caption: {str(caption_error)}")
+                # Continue anyway - we'll use the LLM for analysis
         
-        # Prepare API request
+        # Now use our main chat model for detailed analysis
+        # Convert image to base64 for API storage
+        encoded_image_b64 = base64.b64encode(image_content).decode("utf-8")
+        
+        # Create analysis prompt
+        analysis_prompt = (
+            "I'm providing an image for you to analyze in detail. Please give a comprehensive description covering:\n"
+            "1. Main subjects and objects in the image\n"
+            "2. Scene setting, background, and environment\n"
+            "3. Colors, lighting, composition, and visual style\n"
+            "4. Any text visible in the image\n"
+            "5. Mood or emotion conveyed\n"
+            "6. Any cultural or contextual significance\n\n"
+        )
+        
+        if basic_caption:
+            analysis_prompt += f"Initial caption from image recognition: {basic_caption}\n\n"
+            
+        analysis_prompt += "Please provide a detailed, multi-paragraph analysis that would help someone fully understand what's in this image."
+        
+        # Prepare API request to our chat model
         headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
-        
-        # Encode image as base64
-        encoded_image = base64.b64encode(image_content).decode("utf-8")
-        
-        # Send request to Hugging Face API
+
+        # Create custom system message for analysis
+        system_message = (
+            "You are Lucid Core, an expert image analyst with keen attention to detail. "
+            "Your task is to provide detailed, insightful descriptions of images. "
+            "Be thorough but stay natural and conversational, avoiding analytical jargon when possible. "
+            "Structure your response in 3-5 paragraphs to cover different aspects of the image. "
+            "Avoid saying 'I see' or 'I can see' repeatedly."
+        )
+
+        payload = {
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": analysis_prompt}
+            ],
+            "temperature": 0.7,
+        }
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{HUGGINGFACE_API_URL}{IMAGE_CAPTIONING_MODEL}",
-                headers=headers,
-                json={"inputs": {"image": encoded_image}},
-                timeout=30
+                API_URL, 
+                headers=headers, 
+                json=payload, 
+                timeout=20
             )
             
             if response.status_code != 200:
@@ -552,25 +623,10 @@ async def analyze_image(
                 return {"error": f"Image analysis failed: API returned {response.status_code}", "success": False}
                 
             result = response.json()
-            
-            # Handle different response formats more robustly
-            caption = ""
-            if isinstance(result, list) and len(result) > 0:
-                if isinstance(result[0], dict):
-                    caption = result[0].get("generated_text", "")
-                else:
-                    caption = str(result[0])
-            elif isinstance(result, dict):
-                caption = result.get("generated_text", "")
-            else:
-                caption = str(result)
+            detailed_caption = result["choices"][0]["message"]["content"]
                 
-            if not caption:
-                logger.warning("Empty caption received from API")
-                return {"error": "No caption could be generated for this image", "success": False}
-                
-            logger.info(f"Image analysis result: {caption[:50]}...")
-            return {"caption": caption, "success": True}
+            logger.info(f"Detailed image analysis generated: {len(detailed_caption)} chars")
+            return {"caption": detailed_caption, "success": True}
     
     except httpx.HTTPStatusError as e:
         logger.error(f"Image analysis HTTP error: {str(e)}")
@@ -643,60 +699,173 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-# --- Improved OCR Endpoint (Qwen VL) ---
+# --- Improved OCR Endpoint with Better Error Handling ---
 @app.post("/image-ocr", response_model=OCRResponse)
 async def process_ocr(
     file: UploadFile = File(...),
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Extract text from images using Qwen/Qwen2-VL-2B-Instruct model
+    Extract text from images using LLM-based OCR capabilities
     """
     try:
-        # Validate HUGGINGFACE_API_KEY
-        if not HUGGINGFACE_API_KEY:
-            logger.error("Hugging Face API key not configured")
-            return {"error": "Hugging Face API key not configured", "success": False}
-        
         # Read image file
         image_content = await file.read()
+        
+        if not image_content:
+            logger.error("Empty image file received")
+            return {"error": "Empty image file", "success": False}
         
         # Validate file size (Max 10MB)
         if len(image_content) > 10 * 1024 * 1024:
             logger.error("Image size exceeds the limit (max 10MB)")
             return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
         
-        # Verify and optimize image format
+        # Verify image format
         try:
             img = Image.open(io.BytesIO(image_content))
-            original_format = img.format
+            logger.info(f"OCR image format validation: {img.format}, {img.size}")
             
-            # Convert to RGB if not already (handles RGBA, etc.)
+            # Sometimes preprocessing helps OCR
+            # Convert to RGB if needed
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            
-            # Enhance image for better OCR - increase contrast slightly
+                
+            # Enhance contrast slightly for better text detection
             from PIL import ImageEnhance
             enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(1.2)  # Subtle enhancement
+            img = enhancer.enhance(1.5)  # Increase contrast
             
-            # Resize if too large (helps with API limits and processing speed)
-            max_dim = 1000
-            if max(img.width, img.height) > max_dim:
-                ratio = max_dim / max(img.width, img.height)
-                new_width = int(img.width * ratio)
-                new_height = int(img.height * ratio)
-                img = img.resize((new_width, new_height), Image.LANCZOS)
-            
-            # Save to bytes with optimal format for OCR
+            # Save back to bytes
             buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=95)
+            img.save(buffer, format="JPEG", quality=95)  
             image_content = buffer.getvalue()
-            
-            logger.info(f"Image successfully processed for OCR: original format {original_format}, resized to {img.size}")
         except Exception as img_error:
-            logger.error(f"Image processing error: {str(img_error)}")
+            logger.error(f"Invalid image format: {str(img_error)}")
             return {"error": f"Invalid image format or corrupted image: {str(img_error)}", "success": False}
+        
+        # First attempt - use our main LLM model directly which is capable of OCR
+        # This is more reliable than the specialized OCR model in many cases
+        
+        # Convert image to base64 for API
+        encoded_image = base64.b64encode(image_content).decode("utf-8")
+        
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        system_message = (
+            "You are Lucid Core, an expert at extracting text from images. "
+            "Extract ALL text visible in the image, preserving the original formatting when possible. "
+            "Include paragraph breaks, bullet points, and maintain relative positioning of text elements. "
+            "Do NOT describe the image - focus ONLY on transcribing text. "
+            "If no text is visible, state clearly that no text could be detected."
+        )
+
+        # Create OCR prompt
+        ocr_prompt = (
+            "This image contains text that needs to be extracted. "
+            "Please extract ALL text visible in the image, maintaining the original formatting as much as possible. "
+            "Preserve paragraph breaks and the general layout. Include ALL text, even small or partially visible text. "
+            "DO NOT describe the image or what you see - ONLY output the extracted text."
+        )
+
+        payload = {
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": ocr_prompt}
+            ],
+            "temperature": 0.3,  # Lower temperature for more precise extraction
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                API_URL, 
+                headers=headers, 
+                json=payload, 
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                # Fall back to Hugging Face model if available
+                if HUGGINGFACE_API_KEY:
+                    logger.warning(f"Primary OCR failed, falling back to Hugging Face model")
+                    return await fallback_ocr(image_content)
+                else:
+                    error_detail = response.text
+                    logger.error(f"OCR API error: {response.status_code}, {error_detail}")
+                    return {"error": f"OCR failed: API returned {response.status_code}", "success": False}
+                
+            result = response.json()
+            extracted_text = result["choices"][0]["message"]["content"]
+            
+            # Clean up the response - sometimes the model adds explanations
+            # Remove common prefixes the model might add
+            prefixes_to_remove = [
+                "Here's the extracted text:",
+                "Extracted text:",
+                "The text in the image reads:",
+                "Text extracted from the image:",
+                "I've extracted the following text:",
+            ]
+            
+            for prefix in prefixes_to_remove:
+                if extracted_text.startswith(prefix):
+                    extracted_text = extracted_text[len(prefix):].lstrip()
+            
+            # Check if it contains "no text" statements
+            no_text_phrases = [
+                "no text",
+                "couldn't detect any text",
+                "cannot detect any text", 
+                "didn't detect any text",
+                "not able to detect any text",
+                "no visible text",
+                "doesn't contain any text"
+            ]
+            
+            contains_no_text = any(phrase in extracted_text.lower() for phrase in no_text_phrases)
+            
+            if contains_no_text or not extracted_text.strip():
+                logger.warning("No text detected in image")
+                
+                # Try fallback if HF API key is available
+                if HUGGINGFACE_API_KEY:
+                    logger.info("Primary OCR found no text, trying fallback model")
+                    return await fallback_ocr(image_content)
+                else:
+                    return {"error": "No text could be detected in this image", "success": False}
+            
+            logger.info(f"OCR successful, extracted {len(extracted_text)} chars")
+            return {"text": extracted_text, "success": True}
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"OCR HTTP error: {str(e)}")
+        # Try fallback if available
+        if HUGGINGFACE_API_KEY:
+            logger.warning(f"Primary OCR failed with HTTP error, trying fallback")
+            return await fallback_ocr(image_content)
+        error_detail = str(e.response.text) if hasattr(e, 'response') and hasattr(e.response, 'text') else str(e)
+        return {"error": f"API error: {error_detail}", "success": False}
+    except Exception as e:
+        logger.error(f"OCR error: {str(e)}")
+        # Try fallback if available
+        if HUGGINGFACE_API_KEY and 'image_content' in locals():
+            logger.warning(f"Primary OCR failed with exception, trying fallback")
+            return await fallback_ocr(image_content)
+        return {"error": f"Failed to extract text from image: {str(e)}", "success": False}
+
+# Fallback OCR using the model already defined in the code
+async def fallback_ocr(image_content):
+    """Fallback OCR function using the existing OCR model"""
+    try:
+        # Use the OCR_MODEL already defined at the top of the file
+        
+        # Encode image as base64
+        encoded_image = base64.b64encode(image_content).decode("utf-8")
         
         # Prepare API request
         headers = {
@@ -704,16 +873,12 @@ async def process_ocr(
             "Content-Type": "application/json"
         }
         
-        # Encode image as base64
-        encoded_image = base64.b64encode(image_content).decode("utf-8")
+        # Try with a more explicit OCR-focused prompt
+        ocr_prompt = "Please extract ALL text visible in this image. Include everything you can see, preserving layout when possible."
         
-        # Send request to Hugging Face API
         async with httpx.AsyncClient() as client:
-            # Use a specific OCR-focused prompt
-            ocr_prompt = "Extract all text from this image. Ignore any watermarks or decorative elements. Format the text to preserve paragraphs and layout where possible."
-            
             response = await client.post(
-                f"{HUGGINGFACE_API_URL}{OCR_MODEL}",
+                f"{HUGGINGFACE_API_URL}{OCR_MODEL}", # Use the existing OCR_MODEL
                 headers=headers,
                 json={
                     "inputs": {
@@ -721,17 +886,17 @@ async def process_ocr(
                         "prompt": ocr_prompt
                     }
                 },
-                timeout=90
+                timeout=60  # OCR can take time
             )
             
             if response.status_code != 200:
                 error_detail = response.text
-                logger.error(f"OCR API error: {response.status_code}, {error_detail}")
+                logger.error(f"Fallback OCR API error: {response.status_code}, {error_detail}")
                 return {"error": f"OCR failed: API returned {response.status_code}", "success": False}
                 
             result = response.json()
             
-            # Extract text safely handling different response formats
+            # Handle different response formats
             extracted_text = ""
             if isinstance(result, list) and len(result) > 0:
                 if isinstance(result[0], dict):
@@ -743,27 +908,19 @@ async def process_ocr(
             else:
                 extracted_text = str(result)
                 
-            # Clean up response - remove the prompt if it's included in the response
+            # Clean up response - remove the prompt if it's included
             if extracted_text.startswith(ocr_prompt):
                 extracted_text = extracted_text[len(ocr_prompt):].strip()
-            
-            # If no text was found, provide a clear message
-            if not extracted_text:
-                logger.warning("No text found in image")
+                
+            if not extracted_text.strip():
+                logger.warning("No text found in fallback OCR")
                 return {"error": "No text could be detected in this image", "success": False}
             
-            logger.info(f"OCR result: {extracted_text[:50]}...")
+            logger.info(f"Fallback OCR result: {extracted_text[:50]}...")
             return {"text": extracted_text, "success": True}
     
-    except httpx.HTTPStatusError as e:
-        logger.error(f"OCR HTTP error: {str(e)}")
-        error_detail = str(e.response.text) if hasattr(e, 'response') and hasattr(e.response, 'text') else str(e)
-        return {"error": f"API error: {error_detail}", "success": False}
-    except httpx.ReadTimeout:
-        logger.error("OCR request timed out")
-        return {"error": "Request timed out. The image might be too complex or large to process.", "success": False}
     except Exception as e:
-        logger.error(f"OCR error: {str(e)}")
+        logger.error(f"Fallback OCR error: {str(e)}")
         return {"error": f"Failed to extract text from image: {str(e)}", "success": False}
 
 # --- Health check ---
