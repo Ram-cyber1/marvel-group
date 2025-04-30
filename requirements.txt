@@ -1,11 +1,10 @@
 fastapi
-uvicorn
+uvicorn[standard]
 groq
 python-dotenv
 httpx
 google-api-python-client
-Pillow
+pillow
 python-multipart
 pydantic
-asyncio
 starlette
