@@ -48,7 +48,7 @@ HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 # Hugging Face model endpoints
 IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
 IMAGE_GENERATION_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
-OCR_MODEL = "naver-clova-ix/donut-base"
+OCR_MODEL = "microsoft/trocr-base-printed"
 
 # In-memory storage with size limits
 MAX_SESSIONS = 1000
@@ -717,14 +717,18 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-# --- Improved OCR Endpoint with Better Error Handling ---
+# --- Improved OCR Endpoint with Two-Stage Processing ---
 @app.post("/image-ocr", response_model=OCRResponse)
 async def process_ocr(
     file: UploadFile = File(...),
+    user_message: str = Form("", description="Optional user message/query about the image text"),
+    user_id: str = Form(None, description="Optional user ID for session tracking"),
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Extract text from images using LLM-based OCR capabilities
+    Two-stage process:
+    1. Extract text from images using Microsoft's TroCR model
+    2. Process the extracted text with Groq LLM according to user's query/message
     """
     try:
         # Read image file
@@ -739,12 +743,11 @@ async def process_ocr(
             logger.error("Image size exceeds the limit (max 10MB)")
             return {"error": "Image size exceeds the limit (max 10MB)", "success": False}
         
-        # Verify image format
+        # Process image and convert to appropriate format
         try:
             img = Image.open(io.BytesIO(image_content))
             logger.info(f"OCR image format validation: {img.format}, {img.size}")
             
-            # Sometimes preprocessing helps OCR
             # Convert to RGB if needed
             if img.mode != 'RGB':
                 img = img.convert('RGB')
@@ -761,156 +764,63 @@ async def process_ocr(
         except Exception as img_error:
             logger.error(f"Invalid image format: {str(img_error)}")
             return {"error": f"Invalid image format or corrupted image: {str(img_error)}", "success": False}
-        
-        # First attempt - use our main LLM model directly which is capable of OCR
-        # This is more reliable than the specialized OCR model in many cases
-        
-        # Convert image to base64 for API
+
+        # STAGE 1: Send image to Microsoft TroCR for text extraction
+        # Convert image to base64 as expected by TroCR
         encoded_image = base64.b64encode(image_content).decode("utf-8")
         
-        # Prepare API request
-        headers = {
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        system_message = (
-            "You are Lucid Core, an expert at extracting text from images. "
-            "Extract ALL text visible in the image, preserving the original formatting when possible. "
-            "Include paragraph breaks, bullet points, and maintain relative positioning of text elements. "
-            "Do NOT describe the image - focus ONLY on transcribing text. "
-            "If no text is visible, state clearly that no text could be detected."
-        )
-
-        # Create OCR prompt
-        ocr_prompt = (
-            "This image contains text that needs to be extracted. "
-            "Please extract ALL text visible in the image, maintaining the original formatting as much as possible. "
-            "Preserve paragraph breaks and the general layout. Include ALL text, even small or partially visible text. "
-            "DO NOT describe the image or what you see - ONLY output the extracted text."
-        )
-
-        payload = {
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": ocr_prompt}
-            ],
-            "temperature": 0.3,  # Lower temperature for more precise extraction
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                API_URL, 
-                headers=headers, 
-                json=payload, 
-                timeout=30
-            )
+        # TroCR expects only the base64 image
+        extracted_text = await extract_text_with_trocr(encoded_image)
+        
+        if not extracted_text:
+            logger.warning("No text detected in image by TroCR")
+            return {"error": "No text could be detected in this image", "success": False}
             
-            if response.status_code != 200:
-                # Fall back to Hugging Face model if available
-                if HUGGINGFACE_API_KEY:
-                    logger.warning(f"Primary OCR failed, falling back to Hugging Face model")
-                    return await fallback_ocr(image_content)
-                else:
-                    error_detail = response.text
-                    logger.error(f"OCR API error: {response.status_code}, {error_detail}")
-                    return {"error": f"OCR failed: API returned {response.status_code}", "success": False}
-                
-            result = response.json()
-            extracted_text = result["choices"][0]["message"]["content"]
+        logger.info(f"OCR successful, extracted {len(extracted_text)} chars")
+        
+        # STAGE 2: If user provided a message/query, process with Groq LLM
+        if user_message and user_message.strip():
+            processed_response = await process_ocr_text_with_llm(extracted_text, user_message, user_id)
             
-            # Clean up the response - sometimes the model adds explanations
-            # Remove common prefixes the model might add
-            prefixes_to_remove = [
-                "Here's the extracted text:",
-                "Extracted text:",
-                "The text in the image reads:",
-                "Text extracted from the image:",
-                "I've extracted the following text:",
-            ]
-            
-            for prefix in prefixes_to_remove:
-                if extracted_text.startswith(prefix):
-                    extracted_text = extracted_text[len(prefix):].lstrip()
-            
-            # Check if it contains "no text" statements
-            no_text_phrases = [
-                "no text",
-                "couldn't detect any text",
-                "cannot detect any text", 
-                "didn't detect any text",
-                "not able to detect any text",
-                "no visible text",
-                "doesn't contain any text"
-            ]
-            
-            contains_no_text = any(phrase in extracted_text.lower() for phrase in no_text_phrases)
-            
-            if contains_no_text or not extracted_text.strip():
-                logger.warning("No text detected in image")
-                
-                # Try fallback if HF API key is available
-                if HUGGINGFACE_API_KEY:
-                    logger.info("Primary OCR found no text, trying fallback model")
-                    return await fallback_ocr(image_content)
-                else:
-                    return {"error": "No text could be detected in this image", "success": False}
-            
-            logger.info(f"OCR successful, extracted {len(extracted_text)} chars")
-            return {"text": extracted_text, "success": True}
+            # Return both the raw extracted text and the processed response
+            return {
+                "text": extracted_text,
+                "processed_response": processed_response,
+                "success": True
+            }
+        
+        # If no user message, just return the extracted text
+        return {"text": extracted_text, "success": True}
     
-    except httpx.HTTPStatusError as e:
-        logger.error(f"OCR HTTP error: {str(e)}")
-        # Try fallback if available
-        if HUGGINGFACE_API_KEY:
-            logger.warning(f"Primary OCR failed with HTTP error, trying fallback")
-            return await fallback_ocr(image_content)
-        error_detail = str(e.response.text) if hasattr(e, 'response') and hasattr(e.response, 'text') else str(e)
-        return {"error": f"API error: {error_detail}", "success": False}
     except Exception as e:
         logger.error(f"OCR error: {str(e)}")
-        # Try fallback if available
-        if HUGGINGFACE_API_KEY and 'image_content' in locals():
-            logger.warning(f"Primary OCR failed with exception, trying fallback")
-            return await fallback_ocr(image_content)
         return {"error": f"Failed to extract text from image: {str(e)}", "success": False}
 
-# Fallback OCR using the model already defined in the code
-async def fallback_ocr(image_content):
-    """Fallback OCR function using the existing OCR model"""
+# Function to extract text using TroCR model
+async def extract_text_with_trocr(encoded_image):
+    """Extract text from base64 image using Microsoft's TroCR model"""
     try:
-        # Use the OCR_MODEL already defined at the top of the file
-        
-        # Encode image as base64
-        encoded_image = base64.b64encode(image_content).decode("utf-8")
-        
-        # Prepare API request
+        if not HUGGINGFACE_API_KEY:
+            logger.error("Hugging Face API key not configured")
+            return None
+            
+        # Prepare API request - TroCR expects only the base64 image
         headers = {
             "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
             "Content-Type": "application/json"
         }
         
-        # Try with a more explicit OCR-focused prompt
-        ocr_prompt = "Please extract ALL text visible in this image. Include everything you can see, preserving layout when possible."
-        
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{HUGGINGFACE_API_URL}{OCR_MODEL}", # Use the existing OCR_MODEL
+                f"{HUGGINGFACE_API_URL}{OCR_MODEL}",
                 headers=headers,
-                json={
-                    "inputs": {
-                        "image": encoded_image,
-                        "prompt": ocr_prompt
-                    }
-                },
+                json={"inputs": encoded_image},  # TroCR expects just the image, no prompt
                 timeout=60  # OCR can take time
             )
             
             if response.status_code != 200:
-                error_detail = response.text
-                logger.error(f"Fallback OCR API error: {response.status_code}, {error_detail}")
-                return {"error": f"OCR failed: API returned {response.status_code}", "success": False}
+                logger.error(f"TroCR API error: {response.status_code}, {response.text}")
+                return None
                 
             result = response.json()
             
@@ -926,20 +836,110 @@ async def fallback_ocr(image_content):
             else:
                 extracted_text = str(result)
                 
-            # Clean up response - remove the prompt if it's included
-            if extracted_text.startswith(ocr_prompt):
-                extracted_text = extracted_text[len(ocr_prompt):].strip()
-                
             if not extracted_text.strip():
-                logger.warning("No text found in fallback OCR")
-                return {"error": "No text could be detected in this image", "success": False}
+                logger.warning("No text found in TroCR OCR")
+                return None
             
-            logger.info(f"Fallback OCR result: {extracted_text[:50]}...")
-            return {"text": extracted_text, "success": True}
+            logger.info(f"TroCR extraction successful: {extracted_text[:50]}...")
+            return extracted_text
     
     except Exception as e:
-        logger.error(f"Fallback OCR error: {str(e)}")
-        return {"error": f"Failed to extract text from image: {str(e)}", "success": False}
+        logger.error(f"TroCR extraction error: {str(e)}")
+        return None
+
+# Function to process extracted text with Groq LLM according to user query
+async def process_ocr_text_with_llm(extracted_text, user_message, user_id=None):
+    """Process the extracted text with Groq LLM based on user's query"""
+    try:
+        if not API_KEY:
+            logger.error("Groq API key not configured")
+            return "Error: LLM API key not configured"
+            
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        # Create system message
+        system_message = (
+            "You are Lucid Core, an expert at analyzing and processing text extracted from images. "
+            "You've been given text that was extracted from an image using OCR technology. "
+            "Your task is to respond to the user's query about this text content. "
+            "Be helpful, accurate, and focus specifically on what the user is asking about the text."
+        )
+
+        # Track in session history if user_id provided
+        if user_id and user_id in sessions:
+            context_messages = sessions[user_id][:1]  # Keep system message
+            # Add the last few messages for context if available
+            if len(sessions[user_id]) > 1:
+                context_messages.extend(sessions[user_id][-4:])
+        else:
+            context_messages = [{"role": "system", "content": system_message}]
+
+        # Create the user message that includes both the extracted text and user's query
+        combined_message = (
+            f"Here is text extracted from an image using OCR:\n\n"
+            f"```\n{extracted_text}\n```\n\n"
+            f"User query: {user_message}"
+        )
+
+        # Use session context if available, otherwise just system + user message
+        if len(context_messages) > 1:
+            messages = context_messages + [{"role": "user", "content": combined_message}]
+        else:
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": combined_message}
+            ]
+
+        payload = {
+            "model": MODEL,
+            "messages": messages,
+            "temperature": 0.5,  # Slightly lower temperature for more accurate responses
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                API_URL, 
+                headers=headers, 
+                json=payload, 
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                error_detail = response.text
+                logger.error(f"LLM API error: {response.status_code}, {error_detail}")
+                return f"Error processing text: API returned {response.status_code}"
+                
+            result = response.json()
+            processed_response = result["choices"][0]["message"]["content"]
+            
+            # Add to session history if user_id provided
+            if user_id and user_id in sessions:
+                # Add summarized version of user message to avoid huge context
+                ocr_request = f"[OCR REQUEST: User uploaded an image and asked: '{user_message}']"
+                sessions[user_id].append({"role": "user", "content": ocr_request})
+                sessions[user_id].append({"role": "assistant", "content": processed_response})
+                
+                # Enforce session length limit
+                if len(sessions[user_id]) > MAX_SESSION_LENGTH:
+                    sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
+            
+            logger.info(f"LLM processing successful, generated response of {len(processed_response)} chars")
+            return processed_response
+    
+    except Exception as e:
+        logger.error(f"LLM processing error: {str(e)}")
+        return f"Error processing extracted text: {str(e)}"
+
+# Update the OCRResponse model to include the processed response
+class OCRResponse(BaseModel):
+    text: Optional[str] = None
+    processed_response: Optional[str] = None
+    success: bool
+    error: Optional[str] = None
 
 # --- Health check ---
 @app.get("/ping")
