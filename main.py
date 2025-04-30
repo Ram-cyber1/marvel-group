@@ -848,34 +848,34 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-@app.post("/image-ocr", response_model=OCRResponse)
+@app.post("/image-ocr", response_model=dict)
 async def image_ocr(
     file: UploadFile = File(...),
-    user_message: str = Form(""), 
+    user_message: str = Form(""),
     user_id: str = Form(None),
     _: bool = Depends(lambda: rate_limiter.check("ocr"))
 ):
     """
-    Extract text from images using OCR and answer user's query with Lucid Core
+    Extract text from images using OCR and answer the user's query with Lucid Core
     """
     try:
-        # Read image file
+        # Read the image file
         image_bytes = await file.read()
-        
+
         if not image_bytes:
             return {"error": "No image data received", "success": False}
-            
-        # Validate file size
-        if len(image_bytes) > 10 * 1024 * 1024:
+
+        # Validate the file size
+        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB max
             return {"error": "Image too large (max 10MB)", "success": False}
-            
+
         # Extract text from image via OCR.space
         extracted_text = await extract_text_with_ocr_space(image_bytes)
-        
+
         if not extracted_text:
             return {"error": "No text found in image or OCR failed", "success": False}
 
-        # Process with AI model directly — this will be the only visible result
+        # Process with AI model directly — this will be the visible result
         processed_response = await process_with_groq_llm(extracted_text, user_message, user_id)
 
         # Save to session context
@@ -898,7 +898,7 @@ async def image_ocr(
                 sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
 
         return {
-            "text": extracted_text,
+            "text": extracted_text,  # You can remove this if you don't want to expose raw text
             "processed_response": processed_response,
             "success": True
         }
@@ -913,9 +913,9 @@ async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
     Extract text from image using OCR.space API
     """
     try:
-        # Encode image as base64
+        # Encode the image as base64
         encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-        
+
         # Prepare API request
         payload = {
             "base64Image": f"data:image/jpeg;base64,{encoded_image}",
@@ -924,11 +924,11 @@ async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
             "scale": True,
             "OCREngine": 2  # More accurate engine
         }
-        
+
         headers = {
             "apikey": OCR_SPACE_API_KEY
         }
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 OCR_SPACE_API_URL,
@@ -936,15 +936,15 @@ async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
                 headers=headers,
                 timeout=30
             )
-            
+
             result = response.json()
-            
+
             if not result.get("IsErroredOnProcessing") and result.get("ParsedResults"):
                 return result["ParsedResults"][0]["ParsedText"].strip()
-                
+
             logger.warning(f"OCR Space error: {result.get('ErrorMessage')}")
             return None
-            
+
     except Exception as e:
         logger.error(f"OCR Space extraction failed: {str(e)}")
         return None
@@ -952,7 +952,7 @@ async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
 
 async def process_with_groq_llm(extracted_text: str, user_query: str, user_id: Optional[str]) -> str:
     """
-    Use Lucid Core's model to process extracted image text and answer user's query
+    Use Groq's LLM model to process extracted image text and answer the user's query
     """
     try:
         system_prompt = (
@@ -962,7 +962,7 @@ async def process_with_groq_llm(extracted_text: str, user_query: str, user_id: O
             "briefly summarize the image content or mention what you understood."
         )
 
-        # Merge into prompt
+        # Merge the extracted text and user query
         combined_prompt = (
             f"[Extracted text from image]:\n{extracted_text}\n\n"
             f"[User's message]:\n{user_query or 'No specific question provided'}"
