@@ -848,140 +848,26 @@ async def generate_image(
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
 
-@app.post("/image-ocr", response_model=dict)
-async def image_ocr(
-    file: UploadFile = File(...),
-    user_message: str = Form(""),
-    user_id: str = Form(None),
-    _: bool = Depends(lambda: rate_limiter.check("ocr"))
-):
-    """
-    Extract text from images using OCR and answer the user's query with Lucid Core
-    """
-    try:
-        # Read the image file
-        image_bytes = await file.read()
-
-        if not image_bytes:
-            return {"error": "No image data received", "success": False}
-
-        # Validate the file size
-        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB max
-            return {"error": "Image too large (max 10MB)", "success": False}
-
-        # Extract text from image via OCR.space
-        extracted_text = await extract_text_with_ocr_space(image_bytes)
-
-        if not extracted_text:
-            return {"error": "No text found in image or OCR failed", "success": False}
-
-        # Process with AI model directly — this will be the visible result
-        processed_response = await process_with_groq_llm(extracted_text, user_message, user_id)
-
-        # Save to session context
-        if user_id:
-            if user_id not in sessions:
-                sessions[user_id] = []
-
-            sessions[user_id].append({
-                "role": "user",
-                "content": f"[OCR IMAGE UPLOADED] + user query: {user_message or '[no message]'}"
-            })
-
-            sessions[user_id].append({
-                "role": "assistant",
-                "content": f"[OCR RESULT REPLY]:\n{processed_response}"
-            })
-
-            # Enforce session length cap
-            if len(sessions[user_id]) > MAX_SESSION_LENGTH:
-                sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
-
-        return {
-            "text": extracted_text,  # You can remove this if you don't want to expose raw text
-            "processed_response": processed_response,
-            "success": True
-        }
-
-    except Exception as e:
-        logger.error(f"OCR process error: {str(e)}")
-        return {"error": f"OCR process error: {str(e)}", "success": False}
-
-
-async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
-    """
-    Extract text from image using OCR.space API
-    """
-    try:
-        # Encode the image as base64
-        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-
-        # Prepare API request
-        payload = {
-            "base64Image": f"data:image/jpeg;base64,{encoded_image}",
-            "language": "eng",
-            "isOverlayRequired": False,
-            "scale": True,
-            "OCREngine": 2  # More accurate engine
-        }
-
-        headers = {
-            "apikey": OCR_SPACE_API_KEY
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                OCR_SPACE_API_URL,
-                data=payload,
-                headers=headers,
-                timeout=30
-            )
-
-            result = response.json()
-
-            if not result.get("IsErroredOnProcessing") and result.get("ParsedResults"):
-                return result["ParsedResults"][0]["ParsedText"].strip()
-
-            logger.warning(f"OCR Space error: {result.get('ErrorMessage')}")
-            return None
-
-    except Exception as e:
-        logger.error(f"OCR Space extraction failed: {str(e)}")
-        return None
-
-
+# Helper function for LLaMA model processing
 async def process_with_groq_llm(extracted_text: str, user_query: str, user_id: Optional[str]) -> str:
     """
-    Use Groq's LLM model to process extracted image text and answer the user's query
+    Process extracted OCR text with the LLaMA model based on the user's query.
     """
     try:
-        system_prompt = (
-            "You are Lucid Core, a brilliant assistant created by Ram Sharma. "
-            "A user uploaded an image. You extracted some text from it. "
-            "Use the text and respond naturally to their question. If they didn’t ask a question, "
-            "briefly summarize the image content or mention what you understood."
-        )
+        # Prepare the prompt for LLaMA
+        combined_prompt = f"Extracted text from image:\n\n{extracted_text}\n\nUser query: {user_query}"
 
-        # Merge the extracted text and user query
-        combined_prompt = (
-            f"[Extracted text from image]:\n{extracted_text}\n\n"
-            f"[User's message]:\n{user_query or 'No specific question provided'}"
-        )
-
+        # Prepare messages for the API
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": "You are Lucid Core, a helpful AI."},
             {"role": "user", "content": combined_prompt}
         ]
 
-        # Add last few context messages (excluding old system prompts)
-        if user_id and user_id in sessions:
-            context_messages = [msg for msg in sessions[user_id][-4:] if msg["role"] != "system"]
-            messages = [{"role": "system", "content": system_prompt}] + context_messages + [{"role": "user", "content": combined_prompt}]
-
+        # Prepare the request payload
         payload = {
             "model": MODEL,
             "messages": messages,
-            "temperature": 0.6
+            "temperature": 0.7  # Adjust temperature for response style
         }
 
         headers = {
@@ -989,21 +875,101 @@ async def process_with_groq_llm(extracted_text: str, user_query: str, user_id: O
             "Content-Type": "application/json"
         }
 
+        # Make the request to LLaMA model API
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                API_URL,
-                headers=headers,
-                json=payload,
-                timeout=15
-            )
+            response = await client.post(API_URL, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
+
+            # Get LLaMA model's reply
             reply = result["choices"][0]["message"]["content"]
-            return reply.strip()
+            return reply
 
     except Exception as e:
-        logger.error(f"LLM processing failed: {str(e)}")
-        return "Sorry, I had trouble processing the image text with your question."
+        return f"Error processing your request: {str(e)}"
+
+# Helper function to extract text from the image via OCR.Space
+async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
+    """
+    Extract text from an image using OCR.Space API.
+    """
+    try:
+        # Encode image as base64
+        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Prepare API request payload
+        payload = {
+            "base64Image": f"data:image/jpeg;base64,{encoded_image}",
+            "language": "eng",
+            "isOverlayRequired": False,
+            "scale": True,
+            "OCREngine": 2
+        }
+
+        headers = {
+            "apikey": OCR_SPACE_API_KEY
+        }
+
+        # Send request to OCR.Space
+        async with httpx.AsyncClient() as client:
+            response = await client.post(OCR_SPACE_API_URL, data=payload, headers=headers)
+            result = response.json()
+
+            if result.get("IsErroredOnProcessing") or not result.get("ParsedResults"):
+                return None
+
+            # Return extracted text
+            return result["ParsedResults"][0]["ParsedText"].strip()
+
+    except Exception as e:
+        return None
+
+# Main OCR processing endpoint
+@app.post("/image-ocr")
+async def image_ocr(
+    file: UploadFile = File(...),
+    user_message: str = Form(""), 
+    user_id: str = Form(None),
+    _: bool = Depends(lambda: rate_limiter.check("ocr"))  # Add rate limiting if necessary
+):
+    """
+    Extract text from images and process it with LLaMA based on user query.
+    """
+    try:
+        # Read image file
+        image_bytes = await file.read()
+
+        # Check if the image was received correctly
+        if not image_bytes:
+            return {"error": "No image data received", "success": False}
+
+        # Extract text from the image using OCR
+        extracted_text = await extract_text_with_ocr_space(image_bytes)
+        if not extracted_text:
+            return {"error": "No text found in image or OCR failed", "success": False}
+
+        # If user provided a message, process extracted text with LLaMA model
+        processed_response = None
+        if user_message.strip():
+            processed_response = await process_with_groq_llm(extracted_text, user_message, user_id)
+
+        # Store session history if user_id exists
+        if user_id:
+            if user_id not in sessions:
+                sessions[user_id] = []
+            sessions[user_id].append({"role": "user", "content": f"User uploaded an image with query: {user_message}"})
+            sessions[user_id].append({"role": "assistant", "content": f"OCR extracted text: {extracted_text}"})
+            if processed_response:
+                sessions[user_id].append({"role": "assistant", "content": f"Processed response: {processed_response}"})
+
+        return {
+            "extracted_text": extracted_text,
+            "processed_response": processed_response,
+            "success": True
+        }
+
+    except Exception as e:
+        return {"error": f"OCR processing error: {str(e)}", "success": False}
 
 # --- Health check ---
 @app.get("/ping")
