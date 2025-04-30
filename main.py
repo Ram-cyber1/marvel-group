@@ -1001,11 +1001,10 @@ async def image_ocr(
                     
                 logger.info(f"[{user_id}] Added OCR analysis to chat context")
             
-            # Return the final response to the client
             return {
-                "response": processed_response,
-                "success": True
-            }
+    "text": processed_response,  # This is the key your frontend is expecting
+    "success": True
+}
     
     except httpx.HTTPStatusError as e:
         logger.error(f"OCR processing HTTP error: {str(e)}")
@@ -1059,7 +1058,6 @@ async def extract_text_with_ocr_space(image_bytes: bytes) -> Optional[str]:
     except Exception as e:
         logger.error(f"OCR Space extraction failed: {str(e)}")
         return None
-
 
 
 # --- Context Reset Endpoint ---
