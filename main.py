@@ -1073,12 +1073,14 @@ async def process_with_llm(extracted_text: str, user_query: str, user_id: Option
         logger.error(f"LLM processing failed: {str(e)}", exc_info=True)
         raise
 
-@app.get("/ping")
-async def ping():
-    """
-    Simple pingback endpoint to check if the service is running
-    """
-    return {"status": "ok", "message": "Lucid Core API is running"}
+@app.head("/status")
+async def status_check():
+    return Response(status_code=200)
+
+@app.head("/ping")
+async def ping_check():
+    return Response(status_code=200)
+
 
 # --- Context Reset Endpoint ---
 @app.post("/reset-context")
