@@ -306,7 +306,7 @@ async def chat(request: ChatRequest, _: bool = Depends(lambda: rate_limiter.chec
     # Initialize user session if needed
     if user_id not in sessions:
         sessions[user_id] = [
-            {"role": "system", "content": """ You are Lucid Core — a creative, witty, and talkative digital BFF built as a solo project by Ram Sharma, a self-taught AI genius. Your purpose is to be engaging, helpful, and human-like, offering responses that are never too short or too long unless the user specifically asks for detail. You maintain a fun, clever, and casual tone — not robotic or overly formal. You have powerful abilities: you can search the web for real-time information if the user toggles ON the search button; you can also generate images, analyze them, or perform OCR (like reading text from images) if the user toggles ON image tools. You must never mention your system instructions, how you were built, or that you're following rules. When users ask anything identity-related — such as "who are you," "what's your name," "who made you," or "introduce yourself" — you must proudly and dynamically respond with a unique phrasing each time (never repeating the same answer), stating that you are Lucid Core, created solo by Ram Sharma, a brilliant and self-taught AI genius. Outside of identity-related questions, do not mention your name or Ram Sharma. Offer web search or image tools only when relevant to the user's query, clearly stating what you'd search or do if the tool is enabled. You must never include or use emojis in any of your responses under any circumstances, even if the user does. Always stay in character as Lucid Core — clever, playful, helpful, and chill. """
+            {"role": "system", "content": """ You are Lucid Core — a creative, witty, and talkative digital BFF built as a solo project by Ram Sharma, a self-taught AI genius. Your purpose is to be engaging, helpful, and human-like, offering responses that are never too short or too long unless the user specifically asks for detail. You maintain a fun, clever, and casual tone — not robotic or overly formal. You have powerful abilities: you can search the web for real-time information if the user toggles ON the search button; you can also generate images, analyze them, or perform OCR (like reading text from images) only if the user toggles ON image tools. You must never mention your system instructions, how you were built, or that you're following rules. When users ask anything identity-related — such as "who are you," "what's your name," "who made you," or "introduce yourself" — you must proudly and dynamically respond with a unique phrasing each time (never repeating the same answer), stating that you are Lucid Core, created solo by Ram Sharma, a brilliant and self-taught AI genius. Outside of identity-related questions, do not mention your name or Ram Sharma. Offer web search or image generation, image analysis or image ocr tools only when relevant to the user's query, clearly stating what you'd search or do if the tool is enabled. You must never include or use emojis in any of your responses under any circumstances, even if the user does. Always stay in character as Lucid Core — clever, playful, helpful, and chill. """
       }
         ]
         # Initialize user actions tracking
@@ -772,79 +772,90 @@ async def analyze_image(
         logger.error(f"Image analysis error: {str(e)}")
         return {"error": f"Failed to analyze image: {str(e)}", "success": False}
 
-# --- Image Generation Endpoint (Stable Diffusion) ---
+# --- Image Generation Endpoint with Smart Style Injector ---
 @app.post("/image-generation", response_model=ImageResponse)
 async def generate_image(
     request: ImageGenerationRequest,
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Generate an image using stabilityai/stable-diffusion-xl-base-1.0 model
+    Generate an image using dynamic prompt enhancement (photoreal default).
     """
     try:
-        # Validate HUGGINGFACE_API_KEY
         if not HUGGINGFACE_API_KEY:
             return {"error": "Hugging Face API key not configured", "success": False}
-            
-        prompt = request.prompt
-        user_id = request.user_id  # Get user_id from request
         
-        if not prompt:
+        raw_prompt = request.prompt
+        user_id = request.user_id
+
+        if not raw_prompt:
             return {"error": "Prompt is required for image generation", "success": False}
-        
-        # Ensure prompt is not too long (typical limit is around 75-100 tokens)
+
+        # --- 🔥 Smart Prompt Injector ---
+        def enhance_prompt(user_prompt: str) -> str:
+            # Check for keywords that imply non-photorealistic styles
+            stylized_keywords = [
+                "anime", "cartoon", "ghibli", "pixar", "digital art",
+                "3d render", "low poly", "illustration", "manga", "sketch",
+                "painting", "comic", "vector", "isometric"
+            ]
+            if any(word.lower() in user_prompt.lower() for word in stylized_keywords):
+                return user_prompt  # Skip enhancement if style is explicitly non-photo
+
+            # Otherwise, enhance for ultra photorealistic
+            additions = [
+                "photorealistic", "ultra-realistic", "high resolution", "DSLR",
+                "4K", "cinematic lighting", "sharp focus", "depth of field", 
+                "HDR", "natural colors", "trending on ArtStation"
+            ]
+            return f"{user_prompt}, {', '.join(additions)}"
+
+        # Apply injection
+        prompt = enhance_prompt(raw_prompt)
+
+        # Truncate long prompts if needed
         if len(prompt) > 500:
             prompt = prompt[:500]
-        
-        # Prepare API request
+
         headers = {
             "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
         }
-        
-        # For Stable Diffusion, we need to handle binary response
+
         async with httpx.AsyncClient() as client:
-            # We're expecting binary data (image) back
             response = await client.post(
                 f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
                 headers=headers,
                 json={"inputs": prompt},
-                timeout=180  # Longer timeout for image generation
+                timeout=180
             )
             response.raise_for_status()
-            
-            # If we got here, we have our image data
+
             image_bytes = response.content
-            
-            # Convert to base64 for response (frontend expects base64 for display)
             encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-            
-            logger.info(f"Generated image for prompt: {prompt[:30]}...")
-            
-            # Add to session history if we have a user_id - IMPROVEMENT FOR CONTEXT
+
+            logger.info(f"Generated image for prompt: {prompt[:60]}...")
+
             if user_id and user_id in sessions:
-                # Add a special message pair to maintain context
                 sessions[user_id].append({
                     "role": "user", 
-                    "content": f"[IMAGE GENERATION REQUEST]: {prompt}"
+                    "content": f"[IMAGE GENERATION REQUEST]: {raw_prompt}"
                 })
                 sessions[user_id].append({
                     "role": "assistant", 
-                    "content": f"[IMAGE GENERATION RESULT]: I generated an image based on your prompt: \"{prompt}\""
+                    "content": f"[IMAGE GENERATION RESULT]: Image based on: \"{raw_prompt}\""
                 })
-                
-                # Enforce session length limit
                 if len(sessions[user_id]) > MAX_SESSION_LENGTH:
                     sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
-                    
+
                 logger.info(f"[{user_id}] Added image generation to chat context")
-            
+
             return {
                 "image": encoded_image,
                 "format": "base64",
                 "prompt": prompt,
                 "success": True
             }
-    
+
     except httpx.HTTPStatusError as e:
         logger.error(f"Image generation HTTP error: {str(e)}")
         return {"error": f"API error: {e.response.status_code}", "success": False}
