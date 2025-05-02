@@ -37,7 +37,7 @@ app.add_middleware(
 
 # API configuration
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
-API_KEY = os.getenv("GROQ_API_KEY", "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")
+API_KEY = os.getenv("GROQ_API_KEY")
 MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Google Custom Search configuration
