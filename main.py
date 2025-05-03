@@ -192,161 +192,142 @@ class RateLimiter:
 
 rate_limiter = RateLimiter()
 
-# --- Improved search context extraction ---
-def extract_search_context(text: str) -> Optional[str]:
-    """Extract potential search topics from AI response with better precision"""
-    if not text:
-        return None
+# --- Completely redesigned search context extraction ---
+def extract_search_context(user_message: str, ai_response: str = None) -> str:
+    """
+    Extract search context by prioritizing the user's message content,
+    and supplementing with AI response context when needed.
+    
+    Args:
+        user_message: The user's most recent message
+        ai_response: The AI's response suggesting a search (optional)
         
-    text = text.lower()
+    Returns:
+        A string with the extracted search context
+    """
+    if not user_message:
+        return None
     
-    # Method 1: Look for quoted text that likely indicates search topics
-    quoted_matches = re.findall(r'"([^"]+)"', text)
-    search_terms = ["search", "look up", "find", "information", "tell me", "info about", "check", "learn about"]
+    # First, clean the user message to remove common question starters
+    cleaned_user_msg = user_message.strip()
     
-    if quoted_matches:
-        # First, check for quotes immediately after search terms
-        for term in search_terms:
-            for pattern in [
-                rf"{term} for \"([^\"]+)\"",
-                rf"{term} about \"([^\"]+)\"", 
-                rf"{term} \"([^\"]+)\""
-            ]:
-                matches = re.findall(pattern, text)
-                if matches:
-                    return matches[0]
+    # Remove question words and common prefixes
+    cleaned_user_msg = re.sub(r'^(tell me|search for|find|look up|get|show me|what is|who is|when is|where is|why is|how is|can you|could you|would you|do you know|i want to know|please tell me about|i need information on)\s+', '', cleaned_user_msg, flags=re.IGNORECASE)
+    cleaned_user_msg = re.sub(r'^(about|for|on|regarding)\s+', '', cleaned_user_msg, flags=re.IGNORECASE)
+    
+    # If we have a substantial query already, use it directly
+    if len(cleaned_user_msg.split()) >= 2:
+        return cleaned_user_msg
+    
+    # For vague or short queries, combine with AI response context
+    if ai_response and (cleaned_user_msg.lower() in ["it", "this", "that", "these", "those"] or len(cleaned_user_msg.split()) <= 1):
+        # Look for specific entities in the AI response
+        
+        # First, look for quoted entities
+        quoted_entities = re.findall(r'"([^"]+)"', ai_response)
+        if quoted_entities:
+            search_terms = ["search", "look up", "find", "information", "details", "about"]
+            for quoted in quoted_entities:
+                for term in search_terms:
+                    # Check if search term is near the quoted text
+                    if term in ai_response.split(f'"{quoted}"')[0][-30:] or term in ai_response.split(f'"{quoted}"')[1][:30]:
+                        return quoted
+        
+        # Look for entities in search suggestion sentences
+        if any(term in ai_response.lower() for term in ["search", "look up", "find", "toggle"]):
+            sentences = re.split(r'[.!?]\s+', ai_response)
+            for sentence in sentences:
+                if any(term in sentence.lower() for term in ["search", "look up", "find", "toggle"]):
+                    # Try to extract entities using various patterns
+                    entity_patterns = [
+                        r'(?:about|for|on|regarding)\s+([A-Za-z0-9][\w\s\'-]+[\w\'-])',
+                        r'(?:search|find|look up)\s+([A-Za-z0-9][\w\s\'-]+[\w\'-])',
+                        r'information (?:about|on)\s+([A-Za-z0-9][\w\s\'-]+[\w\'-])'
+                    ]
                     
-        # If no direct match, check for quotes near search terms (within 50 chars)
-        for match in quoted_matches:
-            text_before = text.split('"' + match + '"')[0][-50:] if '"' + match + '"' in text else ""
-            text_after = text.split('"' + match + '"')[1][:50] if '"' + match + '"' in text else ""
-            
-            for term in search_terms:
-                if term in text_before or term in text_after:
-                    return match
+                    for pattern in entity_patterns:
+                        match = re.search(pattern, sentence, re.IGNORECASE)
+                        if match:
+                            entity = match.group(1).strip()
+                            if len(entity.split()) > 1 or (len(entity) > 3 and entity.lower() not in ["it", "this", "that"]):
+                                return entity
     
-    # Method 2: Check for specific patterns that suggest search topics
-    patterns = [
-        # More precise patterns with better boundaries
-        r"search (?:for|about)\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\son|\sif|\sand|\sto see|\sto find)",
-        r"look up\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\son|\sif|\sand|\sto see|\sto find)",
-        r"find (?:info|information|details) (?:about|on)\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\sand|\sto see|\sto find)",
-        r"check (?:online|the web|internet) (?:for|about)\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\sand|\sto see|\sto find)",
-        r"toggle on (?:to search|and search|search) (?:for|about)\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\sand|\sto see|\sto find)",
-        r"tell me about\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\sand|\sto see|\sto find)",
-        r"learn about\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\sand|\sto see|\sto find)",
-        r"information on\s+([^.,;!?\"]+?)(?:\.|\?|!|,|;|$|\sand|\sto see|\sto find)",
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            search_context = match.group(1).strip()
-            # If the context is too short or vague, skip it
-            if len(search_context.split()) <= 1 and search_context.lower() in ["it", "this", "that", "these", "those"]:
-                continue
-            return search_context
-    
-    # Method 3: Look for complete search phrases or entities in the vicinity of search suggestions
-    if "toggle on" in text or "turn on" in text or "search" in text or "look up" in text:
-        # Identify sentences with search suggestions
-        sentences = re.split(r'[.!?]\s+', text)
-        for sentence in sentences:
-            if any(term in sentence.lower() for term in ["search", "look up", "find", "toggle on", "turn on"]):
-                # Use a broader pattern to capture entities
-                entity_pattern = r'(?:about|for|on|regarding)\s+([A-Za-z0-9][\w\s\'-]+[\w\'-])'
-                entity_match = re.search(entity_pattern, sentence)
-                if entity_match:
-                    candidate = entity_match.group(1).strip()
-                    # Ensure we're not just picking up single words like "it"
-                    if len(candidate.split()) > 1 or (len(candidate) > 3 and candidate.lower() not in ["it", "this", "that"]):
-                        return candidate
-                
-                # If no specific entity found, try to extract noun phrases
-                words = sentence.split()
-                for i, word in enumerate(words):
-                    if word.lower() in search_terms and i < len(words) - 1:
-                        # Take the next 2-5 words as potential context
-                        remaining = min(5, len(words) - i - 1)
-                        potential_context = " ".join(words[i+1:i+1+remaining])
-                        # Clean up the context by removing stop words at the end
-                        potential_context = re.sub(r'\s+(and|or|to|in|on|with|by|for|if)\s*$', '', potential_context)
-                        if potential_context and not potential_context.isspace():
-                            return potential_context
-    
-    return None
+    # If we still have nothing substantial, return cleaned user message
+    return cleaned_user_msg
 
-def build_search_context_from_history(user_id: str, reset: bool = True) -> Dict[str, Any]:
-    """Build comprehensive search context from conversation history with focus on recency"""
+def build_search_context_from_history(user_id: str) -> Dict[str, Any]:
+    """
+    Build search context from conversation history, prioritizing user queries
+    """
     if user_id not in sessions or len(sessions[user_id]) < 2:
         return {"primary_topic": None, "related_terms": [], "recent_messages": []}
     
-    # If reset is True, we want fresh context based only on the most recent messages
-    messages_to_analyze = sessions[user_id][-4:] if reset else sessions[user_id][-8:]
+    # Get recent messages (maximum 6)
+    recent_messages = sessions[user_id][-6:]
+    
+    # Extract user and AI messages
+    user_messages = [(i, msg["content"]) for i, msg in enumerate(recent_messages) if msg["role"] == "user"]
+    ai_messages = [(i, msg["content"]) for i, msg in enumerate(recent_messages) if msg["role"] == "assistant"]
     
     context = {
         "primary_topic": None,
         "related_terms": [],
-        "recent_messages": []
+        "recent_messages": [msg["content"] for msg in recent_messages]
     }
     
-    # Separate user and AI messages
-    user_messages = [msg["content"] for msg in messages_to_analyze if msg["role"] == "user"]
-    ai_messages = [msg["content"] for msg in messages_to_analyze if msg["role"] == "assistant"]
+    # FIRST PRIORITY: Use the most recent user message that isn't a vague query
+    vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright", 
+                      "done", "do", "yes do it", "yeah", "yep", "ok", "fine", "search", 
+                      "search it", "look it up", "find it", "check", "toggle on", "enable search"]
     
-    context["recent_messages"] = user_messages + ai_messages
+    most_recent_user_msg = user_messages[-1][1] if user_messages else None
     
-    # First try to extract from the most recent AI message
+    # Check if the most recent user message is a substantive query or a vague confirmation
+    if most_recent_user_msg:
+        if most_recent_user_msg.lower() not in vague_phrases and len(most_recent_user_msg.split()) > 1:
+            # This is a substantive query, use it
+            search_context = extract_search_context(most_recent_user_msg)
+            if search_context:
+                context["primary_topic"] = search_context
+                return context
+    
+    # SECOND PRIORITY: If most recent message is vague, look at AI's suggestion and previous user message
+    if most_recent_user_msg and (most_recent_user_msg.lower() in vague_phrases or len(most_recent_user_msg.split()) <= 1):
+        # Find the most recent AI message before this user message
+        relevant_ai_msg = None
+        for ai_idx, ai_content in reversed(ai_messages):
+            if ai_idx < user_messages[-1][0]:  # AI message is before the last user message
+                relevant_ai_msg = ai_content
+                break
+        
+        # Find the user message before the vague one
+        previous_user_msg = None
+        if len(user_messages) >= 2:
+            previous_user_msg = user_messages[-2][1]
+        
+        # Combine previous user message with AI suggestion
+        if previous_user_msg and relevant_ai_msg:
+            combined_context = extract_search_context(previous_user_msg, relevant_ai_msg)
+            if combined_context:
+                context["primary_topic"] = combined_context
+                return context
+    
+    # THIRD PRIORITY: If still no context, try to extract from just the AI's suggestion
     if ai_messages:
-        latest_ai_msg = ai_messages[-1]
-        search_topic = extract_search_context(latest_ai_msg)
-        
-        if search_topic:
-            context["primary_topic"] = search_topic
+        latest_ai_msg = ai_messages[-1][1]
+        ai_context = extract_search_context("", latest_ai_msg)
+        if ai_context:
+            context["primary_topic"] = ai_context
+            return context
     
-    # If no topic found from AI, try the most recent user message
-    if not context["primary_topic"] and user_messages:
-        latest_user_msg = user_messages[-1]
-        
-        # If user message is too short or vague, it's likely a confirmation
-        if len(latest_user_msg.split()) <= 2 and latest_user_msg.lower() in [
-            "yes", "ok", "sure", "go ahead", "please", "search", "look it up", "find it"
-        ]:
-            # Try to extract from the second latest AI message
-            if len(ai_messages) >= 2:
-                search_topic = extract_search_context(ai_messages[-2])
-                if search_topic:
-                    context["primary_topic"] = search_topic
-        else:
-            # For longer user messages, use them directly but clean up
-            # Remove interrogatives and common stop words from the beginning
-            cleaned_msg = re.sub(r'^(what|who|where|when|how|why|is|are|can|could|would|do|does|tell me|search for|find|look up)\s+', '', latest_user_msg.lower())
-            cleaned_msg = re.sub(r'^(the|about|for|on|regarding)\s+', '', cleaned_msg)
-            
-            if cleaned_msg and not cleaned_msg.isspace():
-                context["primary_topic"] = cleaned_msg
-    
-    # Extract related terms from recent messages for context expansion
-    if context["primary_topic"]:
-        # Get important keywords from messages
-        all_text = " ".join(user_messages + ai_messages)
-        
-        # Find noun phrases that are not part of the primary topic
-        words = re.findall(r'\b[A-Z][a-z]{2,}\b|\b[a-z]{3,}\b', all_text)
-        freq = {}
-        for word in words:
-            word = word.lower()
-            if word not in context["primary_topic"].lower() and word not in [
-                "the", "and", "for", "that", "what", "when", "where", "how", "why", 
-                "you", "me", "your", "my", "our", "we", "they", "them", "this", "these"
-            ]:
-                freq[word] = freq.get(word, 0) + 1
-        
-        # Get most frequent terms
-        related = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:5]
-        context["related_terms"] = [term for term, _ in related]
+    # FOURTH PRIORITY: Just use the most recent user message, even if it's vague
+    if most_recent_user_msg:
+        cleaned = re.sub(r'^(tell me|search for|find|look up)\s+', '', most_recent_user_msg, flags=re.IGNORECASE)
+        cleaned = re.sub(r'^(about|for|on|regarding)\s+', '', cleaned, flags=re.IGNORECASE)
+        context["primary_topic"] = cleaned
     
     return context
+
 
 # Error handling middleware
 @app.middleware("http")
@@ -488,53 +469,46 @@ async def search(request: SearchRequest, _: bool = Depends(lambda: rate_limiter.
     if not user_id:
         return {"error": "Missing user ID. Cannot retrieve intent context."}
 
-    # List of vague confirmation phrases
+    # Check if this is a direct or vague query
     vague_phrases = ["yes", "do it", "go ahead", "sure", "okay", "please do", "alright", 
                     "done", "do", "yes do it", "yeah", "yep", "ok", "fine", "search", 
                     "search it", "look it up", "find it", "check", "toggle on", "enable search"]
     
-    # Always rebuild search context based on latest conversation history
-    search_contexts[user_id] = build_search_context_from_history(user_id, reset=True)
-    logger.info(f"[{user_id}] Built fresh search context: {search_contexts[user_id]['primary_topic']}")
+    is_vague_query = query.lower() in vague_phrases or len(query.split()) <= 1
     
-    # Determine search query based on context and user input
-    search_query = query
-    
-    # If the user gives a vague confirmation, use stored context
-    if query.lower() in vague_phrases or len(query.split()) <= 2:
-        if user_id in search_contexts and search_contexts[user_id]["primary_topic"]:
-            search_query = search_contexts[user_id]["primary_topic"]
-            logger.info(f"[{user_id}] Using stored search context: {search_query}")
+    if is_vague_query:
+        # For vague queries, rebuild context using our new function
+        context_data = build_search_context_from_history(user_id)
+        if context_data["primary_topic"]:
+            search_query = context_data["primary_topic"]
+            search_contexts[user_id] = context_data
+            logger.info(f"[{user_id}] Vague query, using context: {search_query}")
         else:
-            # Fallback: use the last user message
-            if user_id in sessions and len(sessions[user_id]) >= 3:
-                user_msgs = [msg for msg in sessions[user_id][-5:] if msg["role"] == "user"]
-                if len(user_msgs) >= 2:  # Use second-to-last message for context
-                    search_query = user_msgs[-2]["content"]
-                    logger.info(f"[{user_id}] Fallback to previous user message: {search_query}")
-                else:
-                    return {"error": "I'm not sure what to search for. Please be more specific."}
-            else:
-                return {"error": "I'm not sure what to search for. Please be more specific."}
+            return {"error": "I'm not sure what to search for. Could you please be more specific?"}
     else:
-        # Direct search query - use it directly
+        # For direct queries, use the query itself
         search_query = query
-        # Update the search context with this direct query
-        search_contexts[user_id]["primary_topic"] = query
-        logger.info(f"[{user_id}] Using direct search query: {query}")
+        # Store this query as the primary topic for future reference
+        if user_id not in search_contexts:
+            search_contexts[user_id] = {"primary_topic": query, "related_terms": [], "recent_messages": []}
+        else:
+            search_contexts[user_id]["primary_topic"] = query
+            
+        logger.info(f"[{user_id}] Direct search query: {search_query}")
 
-    # Clean up search contexts if we have too many
+    # Clean up contexts if needed
     if len(search_contexts) > MAX_SEARCH_CONTEXTS:
-        # Remove 100 random contexts to prevent memory issues
         contexts_to_remove = list(search_contexts.keys())[:100]
         for ctx_id in contexts_to_remove:
             del search_contexts[ctx_id]
-            
+                
     # Execute the search
     search_url = GOOGLE_API_URL + search_query
 
     # Rest of the function remains the same
     # ...
+
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(search_url, timeout=10)
