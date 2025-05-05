@@ -50,7 +50,7 @@ REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 
 # Hugging Face model endpoints
-IMAGE_CAPTIONING_MODEL = "lucataco/moondream2:72ccb656353c348c1385df54b237eeb7bfa874bf11486cf0b9473e691b662d31
+IMAGE_CAPTIONING_MODEL = "lucataco/moondream2:72ccb656353c348c1385df54b237eeb7bfa874bf11486cf0b9473e691b662d31"
 IMAGE_GENERATION_MODEL = "black-forest-labs/flux-schnell"
 
 # OCR.Space API configuration
