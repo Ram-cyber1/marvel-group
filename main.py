@@ -809,14 +809,13 @@ async def analyze_image(
         logger.error(f"Image analysis error: {str(e)}")
         return {"error": f"Failed to analyze image: {str(e)}", "success": False}
 
-# --- Image Generation Endpoint Using Pollinations (Free & No API Key) ---
 @app.post("/image-generation", response_model=ImageResponse)
 async def generate_image(
     request: ImageGenerationRequest,
-    _: bool = Depends(lambda: rate_limiter.check("image"))
+    _: bool = Depends(lambda: asyncio.ensure_future(rate_limiter.check("image")))
 ):
     """
-    Generate an image using a free public API (Pollinations) with smart photoreal style enhancement.
+    Generate an image using Pollinations (no API key required).
     """
     try:
         raw_prompt = request.prompt
@@ -825,7 +824,7 @@ async def generate_image(
         if not raw_prompt:
             return {"error": "Prompt is required for image generation", "success": False}
 
-        # --- 🔥 Smart Prompt Enhancer ---
+        # Enhance photorealistic prompts unless stylized
         def enhance_prompt(user_prompt: str) -> str:
             stylized_keywords = [
                 "anime", "cartoon", "ghibli", "pixar", "digital art",
@@ -845,22 +844,17 @@ async def generate_image(
         if len(prompt) > 500:
             prompt = prompt[:500]
 
-        # Pollinations URL with URL-encoded prompt
-        pollinations_url = f"https://image.pollinations.ai/prompt/{httpx.utils.quote(prompt)}"
+        pollinations_url = f"https://image.pollinations.ai/prompt/{prompt}"
 
-        # Fetch image
         async with httpx.AsyncClient() as client:
-            response = await client.get(pollinations_url)
-            if response.status_code != 200:
-                raise HTTPException(status_code=response.status_code, detail="Image generation failed")
+            response = await client.get(pollinations_url, timeout=60)
+            response.raise_for_status()
             image_bytes = response.content
 
-        # Convert image to base64
         encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
         logger.info(f"Generated image for prompt: {prompt[:60]}...")
 
-        # Update chat context if user session exists
         if user_id and user_id in sessions:
             sessions[user_id].append({
                 "role": "user",
@@ -888,6 +882,7 @@ async def generate_image(
     except Exception as e:
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
+
 
 
 @app.post("/image-ocr", response_model=ImageOCRResponse)
