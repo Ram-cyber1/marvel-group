@@ -51,7 +51,7 @@ REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 
 # Hugging Face model endpoints
 IMAGE_CAPTIONING_MODEL = "lucataco/moondream2:72ccb656353c348c1385df54b237eeb7bfa874bf11486cf0b9473e691b662d31"
-IMAGE_GENERATION_MODEL = "black-forest-labs/flux-schnell"
+IMAGE_GENERATION_MODEL = "stability-ai/stable-diffusion:ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4"
 
 # OCR.Space API configuration
 OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
