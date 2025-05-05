@@ -45,13 +45,13 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJ
 SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "f72330b270a984e20")
 GOOGLE_API_URL = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={SEARCH_ENGINE_ID}&q="
 
-# Hugging Face API configuration
-HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/"
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+# Replicate API URL
+REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 
 # Hugging Face model endpoints
-IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
-IMAGE_GENERATION_MODEL = "Segmind/SSD-1B"
+IMAGE_CAPTIONING_MODEL = "lucataco/moondream2:72ccb656353c348c1385df54b237eeb7bfa874bf11486cf0b9473e691b662d31
+IMAGE_GENERATION_MODEL = "black-forest-labs/flux-schnell"
 
 # OCR.Space API configuration
 OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
@@ -664,17 +664,17 @@ async def analyze_image(
 
         # First get a basic caption using Hugging Face (if available)
         basic_caption = ""
-        if HUGGINGFACE_API_KEY:
+        if REPLICATE_API_TOKEN:
             try:
                 encoded_image = base64.b64encode(image_content).decode("utf-8")
                 headers = {
-                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+                    "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
                     "Content-Type": "application/json"
                 }
                 
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
-                        f"{HUGGINGFACE_API_URL}{IMAGE_CAPTIONING_MODEL}",
+                        f"{REPLICATE_API_URL}{IMAGE_CAPTIONING_MODEL}",
                         headers=headers,
                         json={"inputs": {"image": encoded_image}},
                         timeout=15
@@ -819,8 +819,8 @@ async def generate_image(
     Generate an image using dynamic prompt enhancement (photoreal default).
     """
     try:
-        if not HUGGINGFACE_API_KEY:
-            return {"error": "Hugging Face API key not configured", "success": False}
+        if not REPLICATE_API_KEY:
+            return {"error": "Replicate API key not configured", "success": False}
         
         raw_prompt = request.prompt
         user_id = request.user_id
@@ -855,43 +855,69 @@ async def generate_image(
             prompt = prompt[:500]
 
         headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Authorization": f"Token {REPLICATE_API_KEY}",
+            "Content-Type": "application/json"
         }
 
+        # Step 1: Create prediction
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
+                REPLICATE_API_URL,
                 headers=headers,
-                json={"inputs": prompt},
+                json={
+                    "version": IMAGE_GENERATION_MODEL,
+                    "input": {"prompt": prompt}
+                },
                 timeout=180
             )
             response.raise_for_status()
+            prediction = response.json()
 
-            image_bytes = response.content
-            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+        prediction_url = prediction["urls"]["get"]
 
-            logger.info(f"Generated image for prompt: {prompt[:60]}...")
+        # Step 2: Poll until complete
+        while True:
+            poll = await client.get(prediction_url, headers=headers)
+            poll.raise_for_status()
+            prediction_result = poll.json()
+            status = prediction_result["status"]
 
-            if user_id and user_id in sessions:
-                sessions[user_id].append({
-                    "role": "user", 
-                    "content": f"[IMAGE GENERATION REQUEST]: {raw_prompt}"
-                })
-                sessions[user_id].append({
-                    "role": "assistant", 
-                    "content": f"[IMAGE GENERATION RESULT]: Image based on: \"{raw_prompt}\""
-                })
-                if len(sessions[user_id]) > MAX_SESSION_LENGTH:
-                    sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
+            if status == "succeeded":
+                image_url = prediction_result["output"][0]
+                break
+            elif status == "failed":
+                raise RuntimeError("Image generation failed.")
+            await asyncio.sleep(1)
 
-                logger.info(f"[{user_id}] Added image generation to chat context")
+        # Step 3: Download image and encode
+        img_response = await client.get(image_url)
+        img_response.raise_for_status()
+        image_bytes = img_response.content
+        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
-            return {
-                "image": encoded_image,
-                "format": "base64",
-                "prompt": prompt,
-                "success": True
-            }
+        logger.info(f"Generated image for prompt: {prompt[:60]}...")
+
+        # Add to session (if applicable)
+        if user_id and user_id in sessions:
+            sessions[user_id].append({
+                "role": "user", 
+                "content": f"[IMAGE GENERATION REQUEST]: {raw_prompt}"
+            })
+            sessions[user_id].append({
+                "role": "assistant", 
+                "content": f"[IMAGE GENERATION RESULT]: Image based on: \"{raw_prompt}\""
+            })
+            if len(sessions[user_id]) > MAX_SESSION_LENGTH:
+                sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
+
+            logger.info(f"[{user_id}] Added image generation to chat context")
+
+        return {
+            "image": encoded_image,
+            "format": "base64",
+            "prompt": prompt,
+            "success": True
+        }
 
     except httpx.HTTPStatusError as e:
         logger.error(f"Image generation HTTP error: {str(e)}")
@@ -899,7 +925,6 @@ async def generate_image(
     except Exception as e:
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
-
 
 @app.post("/image-ocr", response_model=ImageOCRResponse)
 async def image_ocr(
