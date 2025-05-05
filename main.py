@@ -809,37 +809,31 @@ async def analyze_image(
         logger.error(f"Image analysis error: {str(e)}")
         return {"error": f"Failed to analyze image: {str(e)}", "success": False}
 
-# --- Image Generation Endpoint with Smart Style Injector ---
+# --- Image Generation Endpoint Using ClipDrop (Stability AI) ---
 @app.post("/image-generation", response_model=ImageResponse)
 async def generate_image(
     request: ImageGenerationRequest,
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Generate an image using dynamic prompt enhancement (photoreal default).
+    Generate an image using a free public API (ClipDrop) with smart photoreal style enhancement.
     """
     try:
-        if not REPLICATE_API_KEY:
-            return {"error": "Replicate API key not configured", "success": False}
-        
         raw_prompt = request.prompt
         user_id = request.user_id
 
         if not raw_prompt:
             return {"error": "Prompt is required for image generation", "success": False}
 
-        # --- 🔥 Smart Prompt Injector ---
+        # --- 🔥 Smart Prompt Enhancer ---
         def enhance_prompt(user_prompt: str) -> str:
-            # Check for keywords that imply non-photorealistic styles
             stylized_keywords = [
                 "anime", "cartoon", "ghibli", "pixar", "digital art",
                 "3d render", "low poly", "illustration", "manga", "sketch",
                 "painting", "comic", "vector", "isometric"
             ]
             if any(word.lower() in user_prompt.lower() for word in stylized_keywords):
-                return user_prompt  # Skip enhancement if style is explicitly non-photo
-
-            # Otherwise, enhance for ultra photorealistic
+                return user_prompt
             additions = [
                 "photorealistic", "ultra-realistic", "high resolution", "DSLR",
                 "4K", "cinematic lighting", "sharp focus", "depth of field", 
@@ -847,64 +841,39 @@ async def generate_image(
             ]
             return f"{user_prompt}, {', '.join(additions)}"
 
-        # Apply injection
         prompt = enhance_prompt(raw_prompt)
-
-        # Truncate long prompts if needed
         if len(prompt) > 500:
             prompt = prompt[:500]
 
-        headers = {
-            "Authorization": f"Token {REPLICATE_API_KEY}",
-            "Content-Type": "application/json"
+        payload = {
+            "prompt": prompt
         }
 
-        # Step 1: Create prediction
+        # Use ClipDrop endpoint from Stability AI
+        clipdrop_url = "https://clipdrop-api.co/text-to-image/v1"
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                REPLICATE_API_URL,
-                headers=headers,
-                json={
-                    "version": IMAGE_GENERATION_MODEL,
-                    "input": {"prompt": prompt}
-                },
-                timeout=180
+                clipdrop_url,
+                json=payload,
+                timeout=60
             )
             response.raise_for_status()
-            prediction = response.json()
+            image_bytes = response.content
 
-        prediction_url = prediction["urls"]["get"]
-
-        # Step 2: Poll until complete
-        while True:
-            poll = await client.get(prediction_url, headers=headers)
-            poll.raise_for_status()
-            prediction_result = poll.json()
-            status = prediction_result["status"]
-
-            if status == "succeeded":
-                image_url = prediction_result["output"][0]
-                break
-            elif status == "failed":
-                raise RuntimeError("Image generation failed.")
-            await asyncio.sleep(1)
-
-        # Step 3: Download image and encode
-        img_response = await client.get(image_url)
-        img_response.raise_for_status()
-        image_bytes = img_response.content
+        # Convert image to base64
         encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
         logger.info(f"Generated image for prompt: {prompt[:60]}...")
 
-        # Add to session (if applicable)
+        # Update chat context if user session exists
         if user_id and user_id in sessions:
             sessions[user_id].append({
-                "role": "user", 
+                "role": "user",
                 "content": f"[IMAGE GENERATION REQUEST]: {raw_prompt}"
             })
             sessions[user_id].append({
-                "role": "assistant", 
+                "role": "assistant",
                 "content": f"[IMAGE GENERATION RESULT]: Image based on: \"{raw_prompt}\""
             })
             if len(sessions[user_id]) > MAX_SESSION_LENGTH:
