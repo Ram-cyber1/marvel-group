@@ -51,7 +51,7 @@ HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
 # Hugging Face model endpoints
 IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
-IMAGE_GENERATION_MODEL = "black-forest-labs/FLUX.1-dev"
+IMAGE_GENERATION_MODEL = "stabilityai/stable-diffusion-3.5-large"
 
 # OCR.Space API configuration
 OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
