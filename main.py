@@ -809,14 +809,14 @@ async def analyze_image(
         logger.error(f"Image analysis error: {str(e)}")
         return {"error": f"Failed to analyze image: {str(e)}", "success": False}
 
-# --- Image Generation Endpoint Using ClipDrop (Stability AI) ---
+# --- Image Generation Endpoint Using Pollinations (Free & No API Key) ---
 @app.post("/image-generation", response_model=ImageResponse)
 async def generate_image(
     request: ImageGenerationRequest,
     _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Generate an image using a free public API (ClipDrop) with smart photoreal style enhancement.
+    Generate an image using a free public API (Pollinations) with smart photoreal style enhancement.
     """
     try:
         raw_prompt = request.prompt
@@ -836,7 +836,7 @@ async def generate_image(
                 return user_prompt
             additions = [
                 "photorealistic", "ultra-realistic", "high resolution", "DSLR",
-                "4K", "cinematic lighting", "sharp focus", "depth of field", 
+                "4K", "cinematic lighting", "sharp focus", "depth of field",
                 "HDR", "natural colors", "trending on ArtStation"
             ]
             return f"{user_prompt}, {', '.join(additions)}"
@@ -845,20 +845,14 @@ async def generate_image(
         if len(prompt) > 500:
             prompt = prompt[:500]
 
-        payload = {
-            "prompt": prompt
-        }
+        # Pollinations URL with URL-encoded prompt
+        pollinations_url = f"https://image.pollinations.ai/prompt/{httpx.utils.quote(prompt)}"
 
-        # Use ClipDrop endpoint from Stability AI
-        clipdrop_url = "https://clipdrop-api.co/text-to-image/v1"
-
+        # Fetch image
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                clipdrop_url,
-                json=payload,
-                timeout=60
-            )
-            response.raise_for_status()
+            response = await client.get(pollinations_url)
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Image generation failed")
             image_bytes = response.content
 
         # Convert image to base64
@@ -894,6 +888,7 @@ async def generate_image(
     except Exception as e:
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
+
 
 @app.post("/image-ocr", response_model=ImageOCRResponse)
 async def image_ocr(
