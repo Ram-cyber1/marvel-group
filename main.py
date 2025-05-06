@@ -1194,15 +1194,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Send message to Lucid Core backend
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
-        res = await client.post(
-            LUCID_CORE_API_URL,
-            json={"message": message}
-        )
-        if res.status_code == 200:
-            # Extract the content from the choices -> message -> content
-            reply = res.json()["choices"][0]["message"]["content"]
-            return reply
-        return None
+        try:
+            res = await client.post(
+                LUCID_CORE_API_URL,
+                json={"message": message}
+            )
+            res.raise_for_status()  # This will raise an error if the status code is not 200
+
+            # Log the full response for debugging
+            logger.info(f"Received response from backend: {res.json()}")
+
+            # Safely access the response content
+            choices = res.json().get("choices", [])
+            if choices and "message" in choices[0] and "content" in choices[0]["message"]:
+                reply = choices[0]["message"]["content"]
+                logger.info(f"Parsed reply: {reply}")
+                return reply
+            else:
+                logger.warning("Invalid response format or missing content.")
+                return "Lucid Core didn't say anything."
+        except Exception as e:
+            logger.error(f"Error while processing the backend response: {str(e)}")
+            return "Error: Could not process the response."
 
 # Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1211,7 +1224,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main entry point
 async def main():
     # Telegram Bot token
-    TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'
+    TELEGRAM_BOT_TOKEN = '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'
 
     # Create application and pass the bot token
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -1225,4 +1238,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
