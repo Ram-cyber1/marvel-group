@@ -1160,6 +1160,37 @@ async def reset_context(request: Request):
     else:
         return {"message": "No session found to reset"}
 
+
+
+
+import asyncio
+import aiohttp
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+
+TELEGRAM_BOT_TOKEN = "8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw"
+LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"
+
+async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    user_id = str(update.message.chat_id)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(LUCID_CORE_API_URL, json={"user_id": user_id, "message": user_text}) as resp:
+            data = await resp.json()
+            ai_reply = data.get("response", "Lucid Core is speechless 😅")
+
+    await update.message.reply_text(ai_reply)
+
+async def start_telegram_bot():
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
+    await app.run_polling()
+
+# 👇 This runs both FastAPI and Telegram bot together
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    import uvicorn
+    loop = asyncio.get_event_loop()
+
+    loop.create_task(start_telegram_bot())  # Start Telegram bot
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)  # Start FastAPI
