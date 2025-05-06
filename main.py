@@ -1163,54 +1163,63 @@ async def reset_context(request: Request):
 
 
 
+import asyncio
 import logging
-import aiohttp
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import httpx
 
-TELEGRAM_BOT_TOKEN = "8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw"
-LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"
-
-# Setting up logging
-logging.basicConfig(level=logging.DEBUG)
+# Enable logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    user_id = str(update.message.chat_id)
+# Constants
+LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"  # Your backend URL
 
-    # Log the received message to confirm it's coming through
-    logger.debug(f"Received message from user {user_id}: {user_text}")
-    
-    # Check if the message is properly received by Telegram bot
-    await update.message.reply_text(f"Received: {user_text}")
+# Function to handle messages
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
 
+    # Send the user message to Lucid Core backend and get the response
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(LUCID_CORE_API_URL, json={"user_id": user_id, "message": user_text}) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    ai_reply = data.get("response", "Lucid Core is speechless 😅")
-                    # Log the AI response
-                    logger.debug(f"AI response: {ai_reply}")
-                    await update.message.reply_text(ai_reply)
-                else:
-                    logger.error(f"Error response from backend: {resp.status}")
-                    await update.message.reply_text("There was an issue connecting to Lucid Core backend.")
+        response = await send_to_lucid_core(user_message)
+        if response:
+            await update.message.reply_text(response)
+        else:
+            await update.message.reply_text("Lucid Core didn't say anything.")
     except Exception as e:
-        logger.error(f"Error during request: {str(e)}")
-        await update.message.reply_text("An error occurred. Please try again later.")
+        await update.message.reply_text(f"Error: {str(e)}")
 
-async def start_telegram_bot():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
-    await app.run_polling()
+# Send message to Lucid Core backend
+async def send_to_lucid_core(message: str) -> str:
+    async with httpx.AsyncClient() as client:
+        res = await client.post(
+            LUCID_CORE_API_URL,
+            json={"message": message}
+        )
+        if res.status_code == 200:
+            return res.json().get("response")
+        return None
+
+# Start command handler
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! I'm Lucid Core, your digital BFF. Let's chat! 😄")
+
+# Main entry point
+async def main():
+    # Telegram Bot token
+    TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'
+
+    # Create application and pass the bot token
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Register handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Start polling
+    await application.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-
-    # Start both FastAPI and Telegram bot
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_telegram_bot())
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    asyncio.run(main())
