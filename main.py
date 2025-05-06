@@ -1191,31 +1191,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
-# Send message to Lucid Core backend
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(
-                LUCID_CORE_API_URL,
-                json={"message": message}
-            )
-            res.raise_for_status()  # This will raise an error if the status code is not 200
-
-            # Log the full response for debugging
-            logger.info(f"Received response from backend: {res.json()}")
-
-            # Safely access the response content
-            choices = res.json().get("choices", [])
-            if choices and "message" in choices[0] and "content" in choices[0]["message"]:
-                reply = choices[0]["message"]["content"]
-                logger.info(f"Parsed reply: {reply}")
+        res = await client.post(
+            LUCID_CORE_API_URL,
+            json={"message": message}
+        )
+        if res.status_code == 200:
+            # Adjust the response parsing to match the backend response format
+            response_data = res.json()
+            reply = response_data.get("reply")
+            if reply:
                 return reply
-            else:
-                logger.warning("Invalid response format or missing content.")
-                return "Lucid Core didn't say anything."
-        except Exception as e:
-            logger.error(f"Error while processing the backend response: {str(e)}")
-            return "Error: Could not process the response."
+        return None
+
 
 # Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
