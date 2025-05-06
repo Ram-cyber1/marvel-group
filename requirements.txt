@@ -8,3 +8,5 @@ pillow
 python-multipart
 pydantic
 starlette
+aiohttp
+python-telegram-bot==20.3
