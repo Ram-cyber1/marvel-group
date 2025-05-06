@@ -862,7 +862,7 @@ async def generate_image(
                 f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
                 headers=headers,
                 json={"inputs": prompt},
-                timeout=180
+                timeout=240
             )
             response.raise_for_status()
 
