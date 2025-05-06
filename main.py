@@ -1199,7 +1199,9 @@ async def send_to_lucid_core(message: str) -> str:
             json={"message": message}
         )
         if res.status_code == 200:
-            return res.json().get("response")
+            # Extract the content from the choices -> message -> content
+            reply = res.json()["choices"][0]["message"]["content"]
+            return reply
         return None
 
 # Start command handler
@@ -1223,3 +1225,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
