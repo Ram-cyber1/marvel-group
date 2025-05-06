@@ -1162,11 +1162,11 @@ async def reset_context(request: Request):
 
 
 
-
 import asyncio
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import uuid
+from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import Application, CommandHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
 import httpx
 
 # Enable logging
@@ -1177,11 +1177,10 @@ logger = logging.getLogger(__name__)
 # Constants
 LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"  # Your backend URL
 
-# Function to handle messages
+# Function to handle private messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
 
-    # Send the user message to Lucid Core backend and get the response
     try:
         response = await send_to_lucid_core(user_message)
         if response:
@@ -1191,6 +1190,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
+# Function to handle inline queries
+async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query.query
+    if not query:
+        return
+
+    try:
+        response = await send_to_lucid_core(query)
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title="Lucid Core's Reply",
+                input_message_content=InputTextMessageContent(response),
+                description=response[:50] + '...' if len(response) > 50 else response
+            )
+        ]
+        await update.inline_query.answer(results, cache_time=0)
+    except Exception as e:
+        logger.error(f"Inline query failed: {str(e)}")
+
+# Function to send messages to Lucid Core backend
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
@@ -1203,7 +1223,6 @@ async def send_to_lucid_core(message: str) -> str:
             logger.info(f"Raw response: {res.text}")
 
             res.raise_for_status()
-
             response_data = res.json()
             reply = response_data.get("reply")
             return reply if reply else "Lucid Core didn't say anything."
@@ -1217,24 +1236,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main entry point
 async def main():
-    # Telegram Bot token
     TELEGRAM_BOT_TOKEN = '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'
 
-    # Create application and pass the bot token
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Register handlers
+    # Register command and message handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Register inline handler
+    application.add_handler(InlineQueryHandler(handle_inline_query))
 
     # Start polling
     await application.run_polling()
 
 if __name__ == "__main__":
     import nest_asyncio
-    import asyncio
-
-    nest_asyncio.apply()  # 👈 allows nested event loops
-
+    nest_asyncio.apply()
     asyncio.get_event_loop().run_until_complete(main())
 
