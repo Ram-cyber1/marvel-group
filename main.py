@@ -1180,8 +1180,8 @@ LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"  # Your back
 # Function to handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
-    logger.info(f"Received message from user: {user_message}")
 
+    # Send the user message to Lucid Core backend and get the response
     try:
         response = await send_to_lucid_core(user_message)
         if response:
@@ -1189,27 +1189,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Lucid Core didn't say anything.")
     except Exception as e:
-        logger.error(f"Error in handle_message: {str(e)}")
         await update.message.reply_text(f"Error: {str(e)}")
 
-# Send message to Lucid Core backend
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
+            logger.info(f"Sending message to Lucid Core: {message}")
             res = await client.post(
                 LUCID_CORE_API_URL,
                 json={"message": message}
             )
+            logger.info(f"Status code from backend: {res.status_code}")
+            logger.info(f"Raw response: {res.text}")
+
             res.raise_for_status()
 
             response_data = res.json()
-            logger.info(f"Response from backend: {response_data}")
-
             reply = response_data.get("reply")
-            if reply:
-                return reply
-            else:
-                return "Lucid Core didn't say anything."
+            return reply if reply else "Lucid Core didn't say anything."
         except Exception as e:
             logger.error(f"Error while contacting Lucid Core backend: {str(e)}")
             return "Error: Could not connect to Lucid Core."
@@ -1220,15 +1217,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main entry point
 async def main():
+    # Telegram Bot token
     TELEGRAM_BOT_TOKEN = '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'
 
+    # Create application and pass the bot token
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot started polling...")
+    # Start polling
     await application.run_polling()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
