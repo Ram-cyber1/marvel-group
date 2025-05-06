@@ -1180,8 +1180,8 @@ LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"  # Your back
 # Function to handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
+    logger.info(f"Received message from user: {user_message}")
 
-    # Send the user message to Lucid Core backend and get the response
     try:
         response = await send_to_lucid_core(user_message)
         if response:
@@ -1189,22 +1189,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Lucid Core didn't say anything.")
     except Exception as e:
+        logger.error(f"Error in handle_message: {str(e)}")
         await update.message.reply_text(f"Error: {str(e)}")
 
+# Send message to Lucid Core backend
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
-        res = await client.post(
-            LUCID_CORE_API_URL,
-            json={"message": message}
-        )
-        if res.status_code == 200:
-            # Adjust the response parsing to match the backend response format
+        try:
+            res = await client.post(
+                LUCID_CORE_API_URL,
+                json={"message": message}
+            )
+            res.raise_for_status()
+
             response_data = res.json()
+            logger.info(f"Response from backend: {response_data}")
+
             reply = response_data.get("reply")
             if reply:
                 return reply
-        return None
-
+            else:
+                return "Lucid Core didn't say anything."
+        except Exception as e:
+            logger.error(f"Error while contacting Lucid Core backend: {str(e)}")
+            return "Error: Could not connect to Lucid Core."
 
 # Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1212,17 +1220,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main entry point
 async def main():
-    # Telegram Bot token
     TELEGRAM_BOT_TOKEN = '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'
 
-    # Create application and pass the bot token
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Start polling
+    logger.info("Bot started polling...")
     await application.run_polling()
 
 if __name__ == "__main__":
