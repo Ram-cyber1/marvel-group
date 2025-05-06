@@ -45,13 +45,13 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyC15RfBN6oP3n-cnRxai1NEaegWTJ
 SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "f72330b270a984e20")
 GOOGLE_API_URL = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={SEARCH_ENGINE_ID}&q="
 
-# Replicate API URL
-REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+# Hugging Face API configuration
+HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/"
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
 # Hugging Face model endpoints
-IMAGE_CAPTIONING_MODEL = "lucataco/moondream2:72ccb656353c348c1385df54b237eeb7bfa874bf11486cf0b9473e691b662d31"
-IMAGE_GENERATION_MODEL = "stability-ai/stable-diffusion:ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4"
+IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
+IMAGE_GENERATION_MODEL = "black-forest-labs/flux-schnell"
 
 # OCR.Space API configuration
 OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
@@ -812,69 +812,85 @@ async def analyze_image(
 @app.post("/image-generation", response_model=ImageResponse)
 async def generate_image(
     request: ImageGenerationRequest,
-    _: bool = Depends(lambda: asyncio.ensure_future(rate_limiter.check("image")))
+    _: bool = Depends(lambda: rate_limiter.check("image"))
 ):
     """
-    Generate an image using Pollinations (no API key required).
+    Generate an image using dynamic prompt enhancement (photoreal default).
     """
     try:
+        if not HUGGINGFACE_API_KEY:
+            return {"error": "Hugging Face API key not configured", "success": False}
+        
         raw_prompt = request.prompt
         user_id = request.user_id
 
         if not raw_prompt:
             return {"error": "Prompt is required for image generation", "success": False}
 
-        # Enhance photorealistic prompts unless stylized
+        # --- 🔥 Smart Prompt Injector ---
         def enhance_prompt(user_prompt: str) -> str:
+            # Check for keywords that imply non-photorealistic styles
             stylized_keywords = [
                 "anime", "cartoon", "ghibli", "pixar", "digital art",
                 "3d render", "low poly", "illustration", "manga", "sketch",
                 "painting", "comic", "vector", "isometric"
             ]
             if any(word.lower() in user_prompt.lower() for word in stylized_keywords):
-                return user_prompt
+                return user_prompt  # Skip enhancement if style is explicitly non-photo
+
+            # Otherwise, enhance for ultra photorealistic
             additions = [
                 "photorealistic", "ultra-realistic", "high resolution", "DSLR",
-                "4K", "cinematic lighting", "sharp focus", "depth of field",
+                "4K", "cinematic lighting", "sharp focus", "depth of field", 
                 "HDR", "natural colors", "trending on ArtStation"
             ]
             return f"{user_prompt}, {', '.join(additions)}"
 
+        # Apply injection
         prompt = enhance_prompt(raw_prompt)
+
+        # Truncate long prompts if needed
         if len(prompt) > 500:
             prompt = prompt[:500]
 
-        pollinations_url = f"https://image.pollinations.ai/prompt/{prompt}"
+        headers = {
+            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+        }
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(pollinations_url, timeout=60)
+            response = await client.post(
+                f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
+                headers=headers,
+                json={"inputs": prompt},
+                timeout=180
+            )
             response.raise_for_status()
+
             image_bytes = response.content
+            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+            logger.info(f"Generated image for prompt: {prompt[:60]}...")
 
-        logger.info(f"Generated image for prompt: {prompt[:60]}...")
+            if user_id and user_id in sessions:
+                sessions[user_id].append({
+                    "role": "user", 
+                    "content": f"[IMAGE GENERATION REQUEST]: {raw_prompt}"
+                })
+                sessions[user_id].append({
+                    "role": "assistant", 
+                    "content": f"[IMAGE GENERATION RESULT]: Image based on: \"{raw_prompt}\""
+                })
+                if len(sessions[user_id]) > MAX_SESSION_LENGTH:
+                    sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
 
-        if user_id and user_id in sessions:
-            sessions[user_id].append({
-                "role": "user",
-                "content": f"[IMAGE GENERATION REQUEST]: {raw_prompt}"
-            })
-            sessions[user_id].append({
-                "role": "assistant",
-                "content": f"[IMAGE GENERATION RESULT]: Image based on: \"{raw_prompt}\""
-            })
-            if len(sessions[user_id]) > MAX_SESSION_LENGTH:
-                sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
+                logger.info(f"[{user_id}] Added image generation to chat context")
 
-            logger.info(f"[{user_id}] Added image generation to chat context")
-
-        return {
-            "image": encoded_image,
-            "format": "base64",
-            "prompt": prompt,
-            "success": True
-        }
+            return {
+                "image": encoded_image,
+                "format": "base64",
+                "prompt": prompt,
+                "success": True
+            }
 
     except httpx.HTTPStatusError as e:
         logger.error(f"Image generation HTTP error: {str(e)}")
