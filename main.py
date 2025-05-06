@@ -1164,9 +1164,15 @@ async def reset_context(request: Request):
 
 
 import asyncio
+import logging
 import aiohttp
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+import uvicorn
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = "8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw"
 LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"
@@ -1175,22 +1181,32 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
     user_text = update.message.text
     user_id = str(update.message.chat_id)
 
+    logger.info(f"Received message from user {user_id}: {user_text}")
+
     async with aiohttp.ClientSession() as session:
         async with session.post(LUCID_CORE_API_URL, json={"user_id": user_id, "message": user_text}) as resp:
             data = await resp.json()
             ai_reply = data.get("response", "Lucid Core is speechless 😅")
 
+    logger.info(f"Sending response: {ai_reply}")
     await update.message.reply_text(ai_reply)
 
 async def start_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
+    logger.info("Starting Telegram bot...")
     await app.run_polling()
 
-# 👇 This runs both FastAPI and Telegram bot together
+async def start_fastapi():
+    logger.info("Starting FastAPI server...")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+
+# This runs both FastAPI and Telegram bot together
 if __name__ == "__main__":
-    import uvicorn
     loop = asyncio.get_event_loop()
 
+    # Start both tasks concurrently
     loop.create_task(start_telegram_bot())  # Start Telegram bot
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)  # Start FastAPI
+    loop.create_task(start_fastapi())  # Start FastAPI
+
+    loop.run_forever()  # Keep the loop running
