@@ -1,11 +1,12 @@
 import asyncio
 import logging
 import uuid
-import os
-from fastapi import FastAPI, Request
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
 import httpx
+import os
+from fastapi import FastAPI, Request
+
 
 # Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -15,14 +16,18 @@ logger = logging.getLogger(__name__)
 # Constants
 LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw")
-WEBHOOK_URL = "https://telegram-bot-deploy-2.onrender.com/webhook"  # Replace this with your actual webhook URL
 
 # FastAPI app
 app = FastAPI()
 
+
+from fastapi.responses import JSONResponse
+
 @app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping(request: Request):
-    return {"status": "Lucid Core Telegram bot is alive!"}
+    return JSONResponse(content={"status": "Lucid Core Telegram bot is alive!"})
+
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -63,25 +68,14 @@ async def send_to_lucid_core(message: str) -> str:
         res.raise_for_status()
         return res.json().get("reply", "Lucid Core didn't say anything.")
 
-# Run bot with Webhook
+# Run bot
 async def run_bot():
     app_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app_bot.add_handler(InlineQueryHandler(handle_inline_query))
-
-    # Set webhook with Telegram API
-    await app_bot.bot.set_webhook(WEBHOOK_URL)
-
-    # Start FastAPI app
     await app_bot.initialize()
-    logger.info("Webhook set successfully!")
-    
-# FastAPI endpoint to receive updates
-@app.post("/webhook")
-async def webhook(update: dict):
-    update = Update.de_json(update, Application.builder().token(TELEGRAM_BOT_TOKEN).build().bot)
-    await app_bot.process_update(update)
-    return {"status": "ok"}
+    await app_bot.start()
+    await app_bot.updater.start_polling()
 
 
