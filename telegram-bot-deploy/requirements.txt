@@ -1,3 +1,5 @@
 python-telegram-bot==20.0
 httpx==0.24.0
 nest-asyncio==1.5.4
+fastapi==0.110.0
+uvicorn==0.29.0

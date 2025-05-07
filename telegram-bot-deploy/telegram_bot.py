@@ -1,9 +1,17 @@
 import asyncio
 import logging
 import uuid
+import threading
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
+from fastapi import FastAPI
 import httpx
+import nest_asyncio
+import uvicorn
+import os
+
+# Enable nested asyncio for compatibility
+nest_asyncio.apply()
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -11,27 +19,32 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Constants
-LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"  # Your backend URL
+LUCID_CORE_API_URL = "https://lucid-core-backend.onrender.com/chat"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw")
 
-# Function to handle private messages
+# FastAPI app
+app = FastAPI()
+
+@app.get("/")
+def ping():
+    return {"status": "Lucid Core Telegram bot is alive!"}
+
+# Telegram command handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! I'm Lucid Core, your digital BFF. Let's chat! 😄")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
-
     try:
         response = await send_to_lucid_core(user_message)
-        if response:
-            await update.message.reply_text(response)
-        else:
-            await update.message.reply_text("Lucid Core didn't say anything.")
+        await update.message.reply_text(response)
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
-# Function to handle inline queries
 async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query.query
     if not query:
         return
-
     try:
         response = await send_to_lucid_core(query)
         results = [
@@ -46,47 +59,27 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Inline query failed: {str(e)}")
 
-# Function to send messages to Lucid Core backend
+# Backend communication
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
-            logger.info(f"Sending message to Lucid Core: {message}")
-            res = await client.post(
-                LUCID_CORE_API_URL,
-                json={"message": message}
-            )
-            logger.info(f"Status code from backend: {res.status_code}")
-            logger.info(f"Raw response: {res.text}")
-
+            res = await client.post(LUCID_CORE_API_URL, json={"message": message})
             res.raise_for_status()
-            response_data = res.json()
-            reply = response_data.get("reply")
-            return reply if reply else "Lucid Core didn't say anything."
+            return res.json().get("reply", "Lucid Core didn't say anything.")
         except Exception as e:
-            logger.error(f"Error while contacting Lucid Core backend: {str(e)}")
+            logger.error(f"Backend error: {e}")
             return "Error: Could not connect to Lucid Core."
 
-# Start command handler
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hello! I'm Lucid Core, your digital BFF. Let's chat! 😄")
+# Thread to run the bot
+def start_bot():
+    asyncio.run(run_bot())
 
-# Main entry point
-async def main():
-    TELEGRAM_BOT_TOKEN = '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'
+async def run_bot():
+    app_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app_bot.add_handler(InlineQueryHandler(handle_inline_query))
+    await app_bot.run_polling()
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # Register command and message handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Register inline handler
-    application.add_handler(InlineQueryHandler(handle_inline_query))
-
-    # Start polling
-    await application.run_polling()
-
-if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    asyncio.get_event_loop().run_until_complete(main())
+# Start bot thread
+threading.Thread(target=start_bot, daemon=True).start()

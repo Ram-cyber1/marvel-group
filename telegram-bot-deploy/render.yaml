@@ -4,9 +4,9 @@ services:
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python telegram_bot.py"
+    startCommand: "uvicorn telegram_bot:app --host 0.0.0.0 --port 10000"
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        value: '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'  # Replace with your actual bot token.
+        value: '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'
       - key: LUCID_CORE_API_URL
-        value: 'https://lucid-core-backend.onrender.com/chat'  # Replace with your actual backend URL.
+        value: 'https://lucid-core-backend.onrender.com/chat'
