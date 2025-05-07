@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: telegram-bot-service
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python telegram_bot.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: '8115087412:AAG_HDvyMlU88cPoyL7Wx548esAau7UgpPw'  # Replace with your actual bot token.
+      - key: LUCID_CORE_API_URL
+        value: 'https://lucid-core-backend.onrender.com/chat'  # Replace with your actual backend URL.
