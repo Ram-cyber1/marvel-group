@@ -25,7 +25,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8115087412:AAG_HDvyMlU88cP
 # FastAPI app
 app = FastAPI()
 
-@app.get("/")
+@app.head("ping")
 def ping():
     return {"status": "Lucid Core Telegram bot is alive!"}
 
