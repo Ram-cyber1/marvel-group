@@ -25,7 +25,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8115087412:AAG_HDvyMlU88cP
 # FastAPI app
 app = FastAPI()
 
-@app.head("ping")
+@app.get("/ping")
 def ping():
     return {"status": "Lucid Core Telegram bot is alive!"}
 
@@ -70,9 +70,11 @@ async def send_to_lucid_core(message: str) -> str:
             logger.error(f"Backend error: {e}")
             return "Error: Could not connect to Lucid Core."
 
-# Thread to run the bot
-def start_bot():
-    asyncio.run(run_bot())
+# Start the Telegram bot and FastAPI server together
+def start_bot_and_app():
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_bot())
+    loop.create_task(run_app())
 
 async def run_bot():
     app_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -81,5 +83,14 @@ async def run_bot():
     app_bot.add_handler(InlineQueryHandler(handle_inline_query))
     await app_bot.run_polling()
 
-# Start bot thread
-threading.Thread(target=start_bot, daemon=True).start()
+async def run_app():
+    # Run FastAPI app using Uvicorn
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000)
+    server = uvicorn.Server(config)
+    await server.serve()
+
+# Start bot and FastAPI app in separate threads
+if __name__ == "__main__":
+    thread = threading.Thread(target=lambda: asyncio.run(start_bot_and_app()), daemon=True)
+    thread.start()
+
