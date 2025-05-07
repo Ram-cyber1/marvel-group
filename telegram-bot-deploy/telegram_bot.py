@@ -76,6 +76,7 @@ async def run_bot():
     app_bot.add_handler(InlineQueryHandler(handle_inline_query))
     await app_bot.initialize()
     await app_bot.start()
-    await app_bot.updater.start_polling()
+    await app_bot.run_polling()
+
 
 
