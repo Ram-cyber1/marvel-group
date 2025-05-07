@@ -3,9 +3,10 @@ import logging
 import uuid
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
-from fastapi import FastAPI
 import httpx
 import os
+from fastapi import FastAPI, Request
+
 
 # Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
