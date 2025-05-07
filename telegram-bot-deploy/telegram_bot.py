@@ -1,19 +1,13 @@
 import asyncio
 import logging
 import uuid
-import threading
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
 from fastapi import FastAPI
 import httpx
-import nest_asyncio
-import uvicorn
 import os
 
-# Enable nested asyncio for compatibility
-nest_asyncio.apply()
-
-# Enable logging
+# Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,14 +23,17 @@ app = FastAPI()
 def ping():
     return {"status": "Lucid Core Telegram bot is alive!"}
 
-# Telegram command handlers
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(run_bot())
+
+# Bot Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! I'm Lucid Core, your digital BFF. Let's chat! 😄")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
     try:
-        response = await send_to_lucid_core(user_message)
+        response = await send_to_lucid_core(update.message.text)
         await update.message.reply_text(response)
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
@@ -59,38 +56,18 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Inline query failed: {str(e)}")
 
-# Backend communication
 async def send_to_lucid_core(message: str) -> str:
     async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(LUCID_CORE_API_URL, json={"message": message})
-            res.raise_for_status()
-            return res.json().get("reply", "Lucid Core didn't say anything.")
-        except Exception as e:
-            logger.error(f"Backend error: {e}")
-            return "Error: Could not connect to Lucid Core."
+        res = await client.post(LUCID_CORE_API_URL, json={"message": message})
+        res.raise_for_status()
+        return res.json().get("reply", "Lucid Core didn't say anything.")
 
-# Start the Telegram bot and FastAPI server together
-def start_bot_and_app():
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_bot())
-    loop.create_task(run_app())
-
+# Run bot
 async def run_bot():
     app_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app_bot.add_handler(InlineQueryHandler(handle_inline_query))
-    await app_bot.run_polling()
-
-async def run_app():
-    # Run FastAPI app using Uvicorn
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000)
-    server = uvicorn.Server(config)
-    await server.serve()
-
-# Start bot and FastAPI app in separate threads
-if __name__ == "__main__":
-    thread = threading.Thread(target=lambda: asyncio.run(start_bot_and_app()), daemon=True)
-    thread.start()
-
+    await app_bot.initialize()
+    await app_bot.start()
+    await app_bot.updater.start_polling()
