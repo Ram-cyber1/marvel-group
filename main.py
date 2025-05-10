@@ -50,7 +50,7 @@ HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/"
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
 # Hugging Face model endpoints
-IMAGE_CAPTIONING_MODEL = "Salesforce/blip-image-captioning-large"
+IMAGE_CAPTIONING_MODEL = "Salesforce/blip2-flan-t5-xl"
 IMAGE_GENERATION_MODEL = "black-forest-labs/FLUX.1-dev"
 
 # OCR.Space API configuration
