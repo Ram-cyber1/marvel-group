@@ -664,11 +664,11 @@ async def analyze_image(
 
         # First get a basic caption using Hugging Face (if available)
         basic_caption = ""
-        if REPLICATE_API_TOKEN:
+        if HUGGINGFACE_API_KEY:
             try:
                 encoded_image = base64.b64encode(image_content).decode("utf-8")
                 headers = {
-                    "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
+                    "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 
