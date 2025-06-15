@@ -1,5 +1,21 @@
+<<<<<<< HEAD
 python-telegram-bot==20.0
 httpx==0.23.1
 nest-asyncio==1.5.4
 fastapi==0.110.0
 uvicorn==0.29.0
+python-multipart==0.0.6
+=======
+fastapi
+uvicorn[standard]
+groq
+python-dotenv
+httpx
+google-api-python-client
+pillow
+python-multipart
+pydantic
+starlette
+aiohttp
+python-telegram-bot==20.3
+>>>>>>> add885bee9b03827a0f49f9edf37eb7cb8b37700

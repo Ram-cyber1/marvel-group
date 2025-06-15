@@ -361,21 +361,16 @@ async def chat(request: ChatRequest, _: bool = Depends(lambda: rate_limiter.chec
 
     # Process context if provided
     if context and len(context) > 0:
-        # Always preserve the system prompt when processing context
-        system_prompt = sessions[user_id][0]  # Save the system prompt
-        sessions[user_id] = [system_prompt]  # Start with system prompt
-        
+        sessions[user_id] = sessions[user_id][:1]  # Keep system message
         for msg in context:
             if msg.startswith("User: "):
                 sessions[user_id].append({"role": "user", "content": msg[6:]})
             elif msg.startswith("AI: "):
                 sessions[user_id].append({"role": "assistant", "content": msg[4:]})
         
-        # Enforce session length limit while preserving system prompt
+        # Enforce session length limit
         if len(sessions[user_id]) > MAX_SESSION_LENGTH:
-            system_prompt = sessions[user_id][0]  # Always preserve system prompt
-            recent_messages = sessions[user_id][-(MAX_SESSION_LENGTH-1):]  # Keep recent messages
-            sessions[user_id] = [system_prompt] + recent_messages
+            sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
 
     # Add user message to session
     sessions[user_id].append({"role": "user", "content": user_msg})
@@ -439,12 +434,9 @@ async def chat(request: ChatRequest, _: bool = Depends(lambda: rate_limiter.chec
             sessions[user_id] = [msg for msg in sessions[user_id] if not (msg.get("role") == "system" and msg.get("content", "").startswith("["))]
             sessions[user_id].append({"role": "assistant", "content": reply})
 
-            # FIXED: Enforce session length limit while ALWAYS preserving system prompt
+            # Enforce session length limit
             if len(sessions[user_id]) > MAX_SESSION_LENGTH:
-                system_prompt = sessions[user_id][0]  # Always preserve the system prompt
-                recent_messages = sessions[user_id][-(MAX_SESSION_LENGTH-1):]  # Keep recent messages
-                sessions[user_id] = [system_prompt] + recent_messages
-                logger.info(f"[{user_id}] Session trimmed but system prompt preserved")
+                sessions[user_id] = sessions[user_id][-MAX_SESSION_LENGTH:]
 
             # Clean up sessions if we have too many
             if len(sessions) > MAX_SESSIONS:
