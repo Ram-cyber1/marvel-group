@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-🦸‍♂️ Marvel Group Manager Bot
+🦸‍♂️ Marvel Group Manager Bot with Health Check
 Created by Ram Sharma | @Lucid_Core
 """
 
 import logging
 import json
 import asyncio
+import threading
 from datetime import datetime, timedelta
 from functools import wraps
+from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
@@ -27,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 # Bot token (keep secret in production!)
 BOT_TOKEN = "7720248790:AAGiKq9pT0MdGABJiwK5hkds9K4S0f9tkGU"
+
+# Flask app for health check
+flask_app = Flask(__name__)
 
 # File paths for data storage
 LOCKS_FILE = "group_locks.json"
@@ -65,6 +70,31 @@ except FileNotFoundError:
 def save_welcome_messages():
     with open(WELCOME_FILE, "w") as f:
         json.dump(welcome_messages, f)
+
+# Health check endpoint
+@flask_app.route('/health')
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat(),
+        'bot_status': 'running',
+        'uptime': 'active'
+    })
+
+@flask_app.route('/')
+def home():
+    return jsonify({
+        'bot': 'Marvel Group Manager Bot',
+        'status': 'online',
+        'endpoints': {
+            'health': '/health',
+            'ping': '/ping'
+        }
+    })
+
+@flask_app.route('/ping')
+def ping():
+    return jsonify({'message': 'pong', 'timestamp': datetime.utcnow().isoformat()})
 
 # Helper: Check if user is admin
 async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -630,34 +660,55 @@ async def goodbye_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = update.message.left_chat_member.first_name
         await update.message.reply_text(f"👋 {name} just left the chat. Goodbye!")
 
+def run_flask():
+    """Run Flask app in a separate thread"""
+    import os
+    port = int(os.environ.get('PORT', 5000))
+    flask_app.run(host='0.0.0.0', port=port)
+
 # Main function
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    """Main function to run the bot"""
+    try:
+        # Start Flask server in a separate thread
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        logger.info("Flask health check server started")
+        
+        # Build the application
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Command handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(CommandHandler("ban", ban_command))
-    app.add_handler(CommandHandler("kick", kick_command))
-    app.add_handler(CommandHandler("mute", mute_command))
-    app.add_handler(CommandHandler("unmute", unmute_command))
-    app.add_handler(CommandHandler("lock", lock_command))
-    app.add_handler(CommandHandler("unlock", unlock_command))
-    app.add_handler(CommandHandler("warn", warn_command))
-    app.add_handler(CommandHandler("unwarn", unwarn_command))
-    app.add_handler(CommandHandler("warns", warns_command))
-    app.add_handler(CommandHandler("report", report_command))
-    app.add_handler(CommandHandler("setwelcome", setwelcome_command))
-    app.add_handler(CommandHandler("welcome", welcome_toggle_command))
-    app.add_handler(CommandHandler("resetwelcome", resetwelcome_command))
-    
-    # Message handlers
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
-    app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_handler))
-    app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), lock_filter))
+        # Command handlers
+        app.add_handler(CommandHandler("start", start_command))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(CommandHandler("ban", ban_command))
+        app.add_handler(CommandHandler("kick", kick_command))
+        app.add_handler(CommandHandler("mute", mute_command))
+        app.add_handler(CommandHandler("unmute", unmute_command))
+        app.add_handler(CommandHandler("lock", lock_command))
+        app.add_handler(CommandHandler("unlock", unlock_command))
+        app.add_handler(CommandHandler("warn", warn_command))
+        app.add_handler(CommandHandler("unwarn", unwarn_command))
+        app.add_handler(CommandHandler("warns", warns_command))
+        app.add_handler(CommandHandler("report", report_command))
+        app.add_handler(CommandHandler("setwelcome", setwelcome_command))
+        app.add_handler(CommandHandler("welcome", welcome_toggle_command))
+        app.add_handler(CommandHandler("resetwelcome", resetwelcome_command))
+        
+        # Message handlers
+        app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
+        app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_handler))
+        app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), lock_filter))
 
-    logger.info("🤖 Marvel Bot is starting up...")
-    app.run_polling()
+        logger.info("🦸‍♂️ Marvel Group Manager Bot is starting up...")
+        logger.info("Bot is now running! Press Ctrl+C to stop.")
+        
+        # Run the bot
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"Error starting bot: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
