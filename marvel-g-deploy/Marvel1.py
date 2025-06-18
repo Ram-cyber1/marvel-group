@@ -666,7 +666,6 @@ def run_flask():
     port = int(os.environ.get('PORT', 5000))
     flask_app.run(host='0.0.0.0', port=port)
 
-# Main function
 def main():
     """Main function to run the bot"""
     try:
@@ -676,35 +675,35 @@ def main():
         logger.info("Flask health check server started")
         
         # Build the application
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
         # Command handlers
-        app.add_handler(CommandHandler("start", start_command))
-        app.add_handler(CallbackQueryHandler(button_handler))
-        app.add_handler(CommandHandler("ban", ban_command))
-        app.add_handler(CommandHandler("kick", kick_command))
-        app.add_handler(CommandHandler("mute", mute_command))
-        app.add_handler(CommandHandler("unmute", unmute_command))
-        app.add_handler(CommandHandler("lock", lock_command))
-        app.add_handler(CommandHandler("unlock", unlock_command))
-        app.add_handler(CommandHandler("warn", warn_command))
-        app.add_handler(CommandHandler("unwarn", unwarn_command))
-        app.add_handler(CommandHandler("warns", warns_command))
-        app.add_handler(CommandHandler("report", report_command))
-        app.add_handler(CommandHandler("setwelcome", setwelcome_command))
-        app.add_handler(CommandHandler("welcome", welcome_toggle_command))
-        app.add_handler(CommandHandler("resetwelcome", resetwelcome_command))
-        
+        telegram_app.add_handler(CommandHandler("start", start_command))
+        telegram_app.add_handler(CallbackQueryHandler(button_handler))
+        telegram_app.add_handler(CommandHandler("ban", ban_command))
+        telegram_app.add_handler(CommandHandler("kick", kick_command))
+        telegram_app.add_handler(CommandHandler("mute", mute_command))
+        telegram_app.add_handler(CommandHandler("unmute", unmute_command))
+        telegram_app.add_handler(CommandHandler("lock", lock_command))
+        telegram_app.add_handler(CommandHandler("unlock", unlock_command))
+        telegram_app.add_handler(CommandHandler("warn", warn_command))
+        telegram_app.add_handler(CommandHandler("unwarn", unwarn_command))
+        telegram_app.add_handler(CommandHandler("warns", warns_command))
+        telegram_app.add_handler(CommandHandler("report", report_command))
+        telegram_app.add_handler(CommandHandler("setwelcome", setwelcome_command))
+        telegram_app.add_handler(CommandHandler("welcome", welcome_toggle_command))
+        telegram_app.add_handler(CommandHandler("resetwelcome", resetwelcome_command))
+
         # Message handlers
-        app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
-        app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_handler))
-        app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), lock_filter))
+        telegram_app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
+        telegram_app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_handler))
+        telegram_app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), lock_filter))
 
         logger.info("🦸‍♂️ Marvel Group Manager Bot is starting up...")
         logger.info("Bot is now running! Press Ctrl+C to stop.")
         
         # Run the bot
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
         logger.error(f"Error starting bot: {e}")
