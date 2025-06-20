@@ -28,7 +28,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot token (keep secret in production!)
-BOT_TOKEN = "7720248790:AAGiKq9pT0MdGABJiwK5hkds9K4S0f9tkGU"
+BOT_TOKEN = "7720248790:AAEulwxItyu70I9csGHt9kUt4hZNXgZyX7I"
+
 
 # Flask app for health check
 flask_app = Flask(__name__)
