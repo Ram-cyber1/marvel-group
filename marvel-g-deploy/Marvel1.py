@@ -286,6 +286,16 @@ async def start_command_callback(query, context):
     
     await query.edit_message_text(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
 
+# Enhanced moderation commands with fixes and new features
+
+from datetime import datetime, timedelta
+from telegram import Update, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberOwner, ChatMemberAdministrator
+from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram.error import BadRequest, Forbidden
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Ban command
 @admin_only
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,11 +304,47 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_to_ban = update.message.reply_to_message.from_user
+    
+    # Check if user is trying to ban an admin
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user_to_ban.id)
+        if isinstance(member, (ChatMemberOwner, ChatMemberAdministrator)):
+            await update.message.reply_text("❌ Cannot ban an administrator!")
+            return
+    except Exception:
+        pass
+    
     try:
         await context.bot.ban_chat_member(update.effective_chat.id, user_to_ban.id)
         await update.message.reply_text(f"🚫 {user_to_ban.first_name} has been banned!")
+    except BadRequest as e:
+        if "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to ban users!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to ban: {str(e)}")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Failed to ban: {str(e)}")
+
+# Unban command
+@admin_only
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Reply to the user you want to unban.")
+        return
+
+    user_to_unban = update.message.reply_to_message.from_user
+    try:
+        await context.bot.unban_chat_member(update.effective_chat.id, user_to_unban.id, only_if_banned=True)
+        await update.message.reply_text(f"✅ {user_to_unban.first_name} has been unbanned!")
+    except BadRequest as e:
+        if "User is not a member" in str(e):
+            await update.message.reply_text("ℹ️ User is not banned.")
+        elif "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to unban users!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to unban: {str(e)}")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Failed to unban: {str(e)}")
 
 # Kick command
 @admin_only
@@ -308,10 +354,25 @@ async def kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_to_kick = update.message.reply_to_message.from_user
+    
+    # Check if user is trying to kick an admin
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user_to_kick.id)
+        if isinstance(member, (ChatMemberOwner, ChatMemberAdministrator)):
+            await update.message.reply_text("❌ Cannot kick an administrator!")
+            return
+    except Exception:
+        pass
+    
     try:
         await context.bot.ban_chat_member(update.effective_chat.id, user_to_kick.id)
         await context.bot.unban_chat_member(update.effective_chat.id, user_to_kick.id)
         await update.message.reply_text(f"👢 {user_to_kick.first_name} has been kicked!")
+    except BadRequest as e:
+        if "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to kick users!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to kick: {str(e)}")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Failed to kick: {str(e)}")
 
@@ -324,6 +385,15 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.message.reply_to_message.from_user
     duration_arg = context.args[0] if context.args else "1h"
+
+    # Check if user is trying to mute an admin
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
+        if isinstance(member, (ChatMemberOwner, ChatMemberAdministrator)):
+            await update.message.reply_text("❌ Cannot mute an administrator!")
+            return
+    except Exception:
+        pass
 
     # Duration parsing
     try:
@@ -342,7 +412,7 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        until = datetime.utcnow() + duration
+        until = datetime.now() + duration
         await context.bot.restrict_chat_member(
             update.effective_chat.id,
             user.id,
@@ -350,10 +420,15 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             until_date=until
         )
         await update.message.reply_text(f"🔇 {user.first_name} has been muted for {duration_arg}!")
+    except BadRequest as e:
+        if "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to mute users!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to mute: {str(e)}")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Failed to mute: {str(e)}")
 
-# Unmute command
+# Fixed unmute command
 @admin_only
 async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
@@ -361,20 +436,138 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.message.reply_to_message.from_user.id
+    user_name = update.message.reply_to_message.from_user.first_name
+    
     try:
+        # Get the current chat permissions to restore them
+        chat = await context.bot.get_chat(update.effective_chat.id)
+        default_permissions = chat.permissions
+        
         await context.bot.restrict_chat_member(
             chat_id=update.effective_chat.id,
             user_id=user_id,
-            permissions=ChatPermissions(
+            permissions=default_permissions or ChatPermissions(
                 can_send_messages=True,
                 can_send_media_messages=True,
+                can_send_polls=True,
                 can_send_other_messages=True,
                 can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
             )
         )
-        await update.message.reply_text("🔊 User has been unmuted!")
+        await update.message.reply_text(f"🔊 {user_name} has been unmuted!")
+    except BadRequest as e:
+        if "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to unmute users!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to unmute: {str(e)}")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Failed to unmute: {str(e)}")
+
+# Promote command
+@admin_only
+async def promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Reply to the user you want to promote.")
+        return
+
+    user_to_promote = update.message.reply_to_message.from_user
+    
+    # Check if user is already an admin
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user_to_promote.id)
+        if isinstance(member, (ChatMemberOwner, ChatMemberAdministrator)):
+            await update.message.reply_text("ℹ️ User is already an administrator!")
+            return
+    except Exception:
+        pass
+    
+    # Custom title from args
+    title = " ".join(context.args) if context.args else "Admin"
+    if len(title) > 16:
+        title = title[:16]
+    
+    try:
+        await context.bot.promote_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=user_to_promote.id,
+            can_delete_messages=True,
+            can_restrict_members=True,
+            can_pin_messages=True,
+            can_promote_members=False,  # Don't give promote power by default
+            can_change_info=True,
+            can_invite_users=True,
+            can_manage_chat=True,
+            can_manage_video_chats=True
+        )
+        
+        # Set custom title if provided
+        if title != "Admin":
+            try:
+                await context.bot.set_chat_administrator_custom_title(
+                    chat_id=update.effective_chat.id,
+                    user_id=user_to_promote.id,
+                    custom_title=title
+                )
+            except Exception:
+                pass  # Title setting might fail, but promotion succeeded
+        
+        await update.message.reply_text(f"⭐ {user_to_promote.first_name} has been promoted to admin with title '{title}'!")
+    except BadRequest as e:
+        if "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to promote users!")
+        elif "User is an administrator" in str(e):
+            await update.message.reply_text("ℹ️ User is already an administrator!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to promote: {str(e)}")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Failed to promote: {str(e)}")
+
+# Demote command
+@admin_only
+async def demote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Reply to the user you want to demote.")
+        return
+
+    user_to_demote = update.message.reply_to_message.from_user
+    
+    # Check if user is actually an admin
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user_to_demote.id)
+        if isinstance(member, ChatMemberOwner):
+            await update.message.reply_text("❌ Cannot demote the group owner!")
+            return
+        elif not isinstance(member, ChatMemberAdministrator):
+            await update.message.reply_text("ℹ️ User is not an administrator!")
+            return
+    except Exception:
+        await update.message.reply_text("ℹ️ User is not an administrator!")
+        return
+    
+    try:
+        await context.bot.promote_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=user_to_demote.id,
+            can_change_info=False,
+            can_delete_messages=False,
+            can_invite_users=False,
+            can_restrict_members=False,
+            can_pin_messages=False,
+            can_promote_members=False,
+            can_manage_chat=False,
+            can_manage_video_chats=False
+        )
+        await update.message.reply_text(f"📉 {user_to_demote.first_name} has been demoted!")
+    except BadRequest as e:
+        if "Not enough rights" in str(e):
+            await update.message.reply_text("❌ I don't have permission to demote users!")
+        else:
+            await update.message.reply_text(f"⚠️ Failed to demote: {str(e)}")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Failed to demote: {str(e)}")
 
 # Lock command
 @admin_only
@@ -382,14 +575,21 @@ async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     args = context.args
 
-    if len(args) != 1 or args[0] not in ['media', 'links', 'stickers']:
-        await update.message.reply_text("Usage: /lock <media|links|stickers>")
+    if len(args) != 1 or args[0] not in ['media', 'links', 'stickers', 'all']:
+        await update.message.reply_text("Usage: /lock <media|links|stickers|all>")
         return
 
     lock_type = args[0]
-    group_locks.setdefault(chat_id, {})[lock_type] = True
+    group_locks.setdefault(chat_id, {})
+    
+    if lock_type == 'all':
+        group_locks[chat_id] = {'media': True, 'links': True, 'stickers': True}
+        await update.message.reply_text("🔒 All content types locked!")
+    else:
+        group_locks[chat_id][lock_type] = True
+        await update.message.reply_text(f"🔒 {lock_type.capitalize()} locked!")
+    
     save_locks()
-    await update.message.reply_text(f"🔒 {lock_type.capitalize()} locked!")
 
 # Unlock command
 @admin_only
@@ -397,17 +597,24 @@ async def unlock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     args = context.args
 
-    if len(args) != 1 or args[0] not in ['media', 'links', 'stickers']:
-        await update.message.reply_text("Usage: /unlock <media|links|stickers>")
+    if len(args) != 1 or args[0] not in ['media', 'links', 'stickers', 'all']:
+        await update.message.reply_text("Usage: /unlock <media|links|stickers|all>")
         return
 
     lock_type = args[0]
-    if chat_id in group_locks and lock_type in group_locks[chat_id]:
-        group_locks[chat_id][lock_type] = False
-        save_locks()
-        await update.message.reply_text(f"🔓 {lock_type.capitalize()} unlocked!")
+    
+    if lock_type == 'all':
+        if chat_id in group_locks:
+            group_locks[chat_id] = {'media': False, 'links': False, 'stickers': False}
+        await update.message.reply_text("🔓 All content types unlocked!")
     else:
-        await update.message.reply_text(f"🔓 {lock_type.capitalize()} was already unlocked.")
+        if chat_id in group_locks and lock_type in group_locks[chat_id]:
+            group_locks[chat_id][lock_type] = False
+            await update.message.reply_text(f"🔓 {lock_type.capitalize()} unlocked!")
+        else:
+            await update.message.reply_text(f"🔓 {lock_type.capitalize()} was already unlocked.")
+    
+    save_locks()
 
 # Lock filter to enforce content restrictions
 async def lock_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -420,20 +627,39 @@ async def lock_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Delete media
-    if locks.get("media") and (msg.photo or msg.video or msg.document or msg.audio):
-        await msg.delete()
+    if locks.get("media") and (msg.photo or msg.video or msg.document or msg.audio or msg.animation or msg.voice or msg.video_note):
+        try:
+            await msg.delete()
+            # Optional: Send a warning message that auto-deletes
+            warning = await msg.reply_text("🔒 Media is locked in this chat!")
+            await asyncio.sleep(5)
+            await warning.delete()
+        except Exception:
+            pass
         return
 
     # Delete links
     if locks.get("links") and msg.entities:
         for entity in msg.entities:
             if entity.type in ['url', 'text_link']:
-                await msg.delete()
+                try:
+                    await msg.delete()
+                    warning = await msg.reply_text("🔒 Links are locked in this chat!")
+                    await asyncio.sleep(5)
+                    await warning.delete()
+                except Exception:
+                    pass
                 return
 
     # Delete stickers
     if locks.get("stickers") and msg.sticker:
-        await msg.delete()
+        try:
+            await msg.delete()
+            warning = await msg.reply_text("🔒 Stickers are locked in this chat!")
+            await asyncio.sleep(5)
+            await warning.delete()
+        except Exception:
+            pass
         return
 
 # Warn command
@@ -444,6 +670,16 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.message.reply_to_message.from_user
+    
+    # Check if user is trying to warn an admin
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
+        if isinstance(member, (ChatMemberOwner, ChatMemberAdministrator)):
+            await update.message.reply_text("❌ Cannot warn an administrator!")
+            return
+    except Exception:
+        pass
+    
     chat_id = str(update.effective_chat.id)
     user_id = str(user.id)
 
@@ -455,16 +691,19 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = warnings_data[chat_id][user_id]
     save_warnings()
 
+    # Custom reason
+    reason = " ".join(context.args) if context.args else "No reason specified"
+
     if count >= 3:
         try:
             await context.bot.ban_chat_member(chat_id, user.id)
-            await update.message.reply_text(f"🚫 {user.first_name} has been banned after 3 warnings!")
+            await update.message.reply_text(f"🚫 {user.first_name} has been banned after 3 warnings!\nReason: {reason}")
             warnings_data[chat_id][user_id] = 0  # reset warnings after ban
             save_warnings()
         except Exception as e:
             await update.message.reply_text(f"❌ Failed to ban user: {str(e)}")
     else:
-        await update.message.reply_text(f"⚠️ {user.first_name} has been warned. ({count}/3)")
+        await update.message.reply_text(f"⚠️ {user.first_name} has been warned. ({count}/3)\nReason: {reason}")
 
 # Unwarn command
 @admin_only
@@ -498,6 +737,24 @@ async def warns_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = warnings_data.get(chat_id, {}).get(user_id, 0)
     await update.message.reply_text(f"👮 {user.first_name} has {count}/3 warnings.")
 
+# Clear warnings command
+@admin_only
+async def clearwarns_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Reply to a user's message to clear their warnings.")
+        return
+
+    user = update.message.reply_to_message.from_user
+    chat_id = str(update.effective_chat.id)
+    user_id = str(user.id)
+
+    if warnings_data.get(chat_id, {}).get(user_id, 0) > 0:
+        warnings_data[chat_id][user_id] = 0
+        save_warnings()
+        await update.message.reply_text(f"🧹 All warnings cleared for {user.first_name}!")
+    else:
+        await update.message.reply_text(f"ℹ️ {user.first_name} has no warnings to clear.")
+
 # Report command
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
@@ -509,11 +766,15 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     offender = reported_msg.from_user.first_name
     chat_title = update.effective_chat.title or "this chat"
 
+    # Additional context if provided
+    reason = " ".join(context.args) if context.args else "No reason specified"
+
     report_text = (
         f"🚨 *New Report* in {chat_title}\n"
         f"👤 Reported User: {offender}\n"
         f"🗣 Reported By: {reporter}\n"
-        f"📝 Message: {reported_msg.text or 'Media/Special content'}"
+        f"📝 Reason: {reason}\n"
+        f"💬 Message: {reported_msg.text or 'Media/Special content'}"
     )
 
     # Send to group admins
@@ -523,12 +784,19 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for admin in admins:
             if not admin.user.is_bot:
                 try:
-                    await context.bot.send_message(admin.user.id, report_text, parse_mode="Markdown")
+                    await context.bot.send_message(admin.user.id, report_text[:4000], parse_mode="Markdown")
                     admin_count += 1
                 except Exception:
                     pass  # Admin has blocked the bot or doesn't allow messages
 
         await update.message.reply_text(f"✅ Report sent to {admin_count} admin(s). Thank you!")
+        
+        # Delete the report message to avoid clutter
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+            
     except Exception as e:
         await update.message.reply_text("⚠️ Failed to send report to admins.")
 
@@ -561,12 +829,16 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     save_welcome_messages()
     
     # Show preview
-    preview = welcome_text.format(
-        name="John",
-        username="@john",
-        chat=update.effective_chat.title or "This Chat",
-        count="123"
-    )
+    try:
+        preview = welcome_text.format(
+            name="John",
+            username="@john",
+            chat=update.effective_chat.title or "This Chat",
+            count="123"
+        )
+    except KeyError as e:
+        await update.message.reply_text(f"⚠️ Invalid variable in welcome message: {e}")
+        return
     
     await update.message.reply_text(
         f"✅ *Welcome message updated!*\n\n"
@@ -652,62 +924,67 @@ async def welcome_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("ℹ️ Help", callback_data="help")]
         ])
         
-        await update.message.reply_text(welcome_text, reply_markup=keyboard)
+        try:
+            await update.message.reply_text(welcome_text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Failed to send welcome message: {e}")
 
 # Goodbye to users who leave
 async def goodbye_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.left_chat_member:
         name = update.message.left_chat_member.first_name
-        await update.message.reply_text(f"👋 {name} just left the chat. Goodbye!")
+        try:
+            await update.message.reply_text(f"👋 {name} just left the chat. Goodbye!")
+        except Exception as e:
+            logger.error(f"Failed to send goodbye message: {e}")
 
-def run_flask():
-    """Run Flask app in a separate thread"""
-    import os
-    port = int(os.environ.get('PORT', 5000))
-    flask_app.run(host='0.0.0.0', port=port)
+def setup_handlers(telegram_app):
+   """Setup all command handlers"""
+   # Moderation commands
+   telegram_app.add_handler(CommandHandler("ban", ban_command))
+   telegram_app.add_handler(CommandHandler("unban", unban_command))
+   telegram_app.add_handler(CommandHandler("kick", kick_command))
+   telegram_app.add_handler(CommandHandler("mute", mute_command))
+   telegram_app.add_handler(CommandHandler("unmute", unmute_command))
+   telegram_app.add_handler(CommandHandler("promote", promote_command))
+   telegram_app.add_handler(CommandHandler("demote", demote_command))
+   
+   # Lock commands
+   telegram_app.add_handler(CommandHandler("lock", lock_command))
+   telegram_app.add_handler(CommandHandler("unlock", unlock_command))
+   
+   # Warning system
+   telegram_app.add_handler(CommandHandler("warn", warn_command))
+   telegram_app.add_handler(CommandHandler("unwarn", unwarn_command))
+   telegram_app.add_handler(CommandHandler("warns", warns_command))
+   telegram_app.add_handler(CommandHandler("clearwarns", clearwarns_command))
+   
+   # Report system
+   telegram_app.add_handler(CommandHandler("report", report_command))
+   
+   # Welcome system
+   telegram_app.add_handler(CommandHandler("setwelcome", setwelcome_command))
+   telegram_app.add_handler(CommandHandler("welcome", welcome_toggle_command))
+   telegram_app.add_handler(CommandHandler("resetwelcome", resetwelcome_command))
+   
+   # Event handlers
+   telegram_app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
+   telegram_app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_handler))
+   
+   # Content filter (should be added last to catch all messages)
+   telegram_app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), lock_filter), group=1)
 
 def main():
-    """Main function to run the bot"""
-    try:
-        # Start Flask server in a separate thread
-        flask_thread = threading.Thread(target=run_flask, daemon=True)
-        flask_thread.start()
-        logger.info("Flask health check server started")
-        
-        # Build the application
-        telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-        # Command handlers
-        telegram_app.add_handler(CommandHandler("start", start_command))
-        telegram_app.add_handler(CallbackQueryHandler(button_handler))
-        telegram_app.add_handler(CommandHandler("ban", ban_command))
-        telegram_app.add_handler(CommandHandler("kick", kick_command))
-        telegram_app.add_handler(CommandHandler("mute", mute_command))
-        telegram_app.add_handler(CommandHandler("unmute", unmute_command))
-        telegram_app.add_handler(CommandHandler("lock", lock_command))
-        telegram_app.add_handler(CommandHandler("unlock", unlock_command))
-        telegram_app.add_handler(CommandHandler("warn", warn_command))
-        telegram_app.add_handler(CommandHandler("unwarn", unwarn_command))
-        telegram_app.add_handler(CommandHandler("warns", warns_command))
-        telegram_app.add_handler(CommandHandler("report", report_command))
-        telegram_app.add_handler(CommandHandler("setwelcome", setwelcome_command))
-        telegram_app.add_handler(CommandHandler("welcome", welcome_toggle_command))
-        telegram_app.add_handler(CommandHandler("resetwelcome", resetwelcome_command))
-
-        # Message handlers
-        telegram_app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
-        telegram_app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_handler))
-        telegram_app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), lock_filter))
-
-        logger.info("🦸‍♂️ Marvel Group Manager Bot is starting up...")
-        logger.info("Bot is now running! Press Ctrl+C to stop.")
-        
-        # Run the bot
-        telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
-        
-    except Exception as e:
-        logger.error(f"Error starting bot: {e}")
-        raise
+   try:
+       logger.info("🦸‍♂️ Marvel Group Manager Bot is starting up...")
+       logger.info("Bot is now running! Press Ctrl+C to stop.")
+       
+       # Run the bot
+       telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
+       
+   except Exception as e:
+       logger.error(f"Error starting bot: {e}")
+       raise
 
 if __name__ == "__main__":
-    main()
+   main()
