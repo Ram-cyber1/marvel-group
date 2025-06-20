@@ -957,6 +957,12 @@ def setup_handlers(telegram_app):
     telegram_app.add_handler(CommandHandler("unmute", unmute_command))
     telegram_app.add_handler(CommandHandler("promote", promote_command))
     telegram_app.add_handler(CommandHandler("demote", demote_command))
+    # ...existing code...
+    telegram_app.add_handler(CallbackQueryHandler(button_handler))
+# ...existing code...
+    telegram_app.add_handler(CommandHandler("start", start_command))
+    telegram_app.add_handler(CommandHandler("help", start_command))  # Or a separate help_command if you have one
+# ...existing code...
     
     # Lock commands
     telegram_app.add_handler(CommandHandler("lock", lock_command))
