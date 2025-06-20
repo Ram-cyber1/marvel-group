@@ -939,6 +939,14 @@ async def goodbye_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send goodbye message: {e}")
 
+from threading import Thread
+import os
+
+def run_flask_server():
+    port = int(os.environ.get("PORT", 8080))  # Render injects PORT
+    flask_app.run(host="0.0.0.0", port=port)
+
+
 def setup_handlers(telegram_app):
     """Setup all command handlers"""
     # Moderation commands
@@ -978,21 +986,21 @@ def setup_handlers(telegram_app):
 def main():
     try:
         logger.info("🦸‍♂️ Marvel Group Manager Bot is starting up...")
-        
-        # ✅ Define the bot app here using your existing BOT_TOKEN
+
+        # ✅ Start Flask /health server in background
+        Thread(target=run_flask_server).start()
+
+        # ✅ Create and run Telegram bot
         telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
-        
-        # ✅ Setup handlers
         setup_handlers(telegram_app)
 
         logger.info("Bot is now running! Press Ctrl+C to stop.")
-        
-        # ✅ Run the bot
         telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
-    
+
     except Exception as e:
         logger.error(f"Error starting bot: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()
