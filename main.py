@@ -827,9 +827,6 @@ async def generate_image(
     Generate an image using dynamic prompt enhancement (photoreal default).
     """
     try:
-        if not HUGGINGFACE_API_KEY:
-            return {"error": "Hugging Face API key not configured", "success": False}
-        
         raw_prompt = request.prompt
         user_id = request.user_id
 
@@ -862,24 +859,40 @@ async def generate_image(
         if len(prompt) > 500:
             prompt = prompt[:500]
 
-        headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+        # URL encode the prompt for the new API
+        from urllib.parse import quote
+        encoded_prompt = quote(prompt)
+
+        # Build the new API URL with parameters
+        api_params = {
+            'model': 'Flux',
+            'width': getattr(request, 'width', 512),  # Default to 512 if not provided
+            'height': getattr(request, 'height', 512),  # Default to 512 if not provided
+            'steps': getattr(request, 'steps', 25),    # Default to 25 if not provided
+            'guidance': getattr(request, 'guidance', 7),  # Default to 7 if not provided
+            'enhance': 'true',  # Always use enhance for better quality
+            'safe': 'true'      # Always use safe mode
         }
 
+        # Construct the API URL
+        base_url = f"https://image.hello-kaiiddo.workers.dev/{encoded_prompt}"
+        query_string = "&".join([f"{key}={value}" for key, value in api_params.items()])
+        api_url = f"{base_url}?{query_string}"
+
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{HUGGINGFACE_API_URL}{IMAGE_GENERATION_MODEL}",
-                headers=headers,
-                json={"inputs": prompt},
-                timeout=240
+            response = await client.get(
+                api_url,
+                timeout=300  # Increased timeout for image generation
             )
             response.raise_for_status()
 
+            # The new API returns the image directly as bytes
             image_bytes = response.content
             encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
             logger.info(f"Generated image for prompt: {prompt[:60]}...")
 
+            # Maintain session functionality
             if user_id and user_id in sessions:
                 sessions[user_id].append({
                     "role": "user", 
@@ -907,7 +920,6 @@ async def generate_image(
     except Exception as e:
         logger.error(f"Image generation error: {str(e)}")
         return {"error": f"Failed to generate image: {str(e)}", "success": False}
-
 
 
 @app.post("/image-ocr", response_model=ImageOCRResponse)
